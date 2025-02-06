@@ -1,4 +1,5 @@
 import re
+from underthesea import text_normalize
 
 # Dictionary to map numbers to Vietnamese words
 number_to_words = {
@@ -125,7 +126,7 @@ def number_to_vietnamese_words(number_str):
 def _convert_integer_part(number):
     if number == 0:
         return number_to_words[0]
-    
+
     words = []
     
     # Handle billions
@@ -148,6 +149,10 @@ def _convert_integer_part(number):
         words.append(_convert_integer_part(thousand))
         words.append(number_to_words[1000])
         number %= 1000
+        if number < 100 and number > 0:
+            words.append('không trăm')
+        if number < 10 and number > 0:
+            words.append('không')
     
     # Handle hundreds
     if number >= 100:
@@ -170,9 +175,13 @@ def _convert_integer_part(number):
     
     # Handle units (1-9)
     if number > 0:
-        words.append(number_to_words[number])
+        if number == 5 and len(words) > 1 and not words[-1] in['lẻ', 'không']: w = 'lăm'
+        elif number == 1 and len(words) > 1 and not words[-1] in ['lẻ', 'mười', 'không']: w = 'mốt'
+        else:  w = number_to_words[number]
+        words.append(w)
     
     return ' '.join(words)
+
 
 # Helper function to convert the decimal part of a number
 def _convert_decimal_part(decimal_part):
@@ -253,6 +262,8 @@ abbreviation_map = {
     "TP.": "thành phố",
     "TPHCM": "Thành phố Hồ Chí Minh",
     "TT": "Thủ tướng",
+    "TTCK": "Thị trường chứng khoán",
+    "TTTC": "Thị trường tài chính",
     "TTCP": "Thủ tướng chính phủ",
     "TTXVN": "Thông tấn xã Việt Nam",
     "TƯ": "Trung ương",
@@ -284,6 +295,8 @@ def convert_abbreviations(text):
 
 # Function to normalize Vietnamese text
 def normalize_vietnamese_text(text):
+    text = text_normalize(text)
+    
     def replace_slash_with_word(text):
         def replacement(match):
             word = match.group(1)
@@ -343,12 +356,3 @@ def normalize_vietnamese_text(text):
 
     return text.strip()
 
-# Example usage
-# text = "Binh sỹ Quân đoàn XIX có 5000 quân thuộc LHQ lĩnh lương ¥100/ngày, 2000$/tháng, ¥2000 CNY/năm và 100000đ/quí. Tiêu hết ₩1,234.58 để xem nhóm nhạc T.O.Y. biểu diễn, ~50% lương"
-# normalized_text = normalize_vietnamese_text(text)
-# print(normalized_text)
-
-# print(number_to_vietnamese_words('123,456.5'))
-# print(number_to_vietnamese_words('12.5'))
-# print(number_to_vietnamese_words('789.564,5'))
-# print(number_to_vietnamese_words('7,5'))

@@ -8,6 +8,7 @@ import gradio as gr
 import torch
 import torchaudio
 import numpy as np
+import spaces
 
 from huggingface_hub import hf_hub_download
 
@@ -23,7 +24,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 logger = setup_logger(__file__)
-xtts_model = None
+
 df_model, df_state = None, None
 
 checkpoint_dir="/tmp/xtts/model/"
@@ -33,7 +34,6 @@ for d in [checkpoint_dir, temp_dir, enhance_audio_dir]:
     os.makedirs(d, exist_ok=True)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-REFERENCE_AUDIO = os.path.join(APP_DIR, "samples", "nam-calm.wav")
 
 language_dict = {'English': 'en', 'Spanish': 'es', 'French': 'fr', 
                  'German': 'de', 'Italian': 'it', 'Portuguese': 'pt', 
@@ -44,14 +44,21 @@ language_dict = {'English': 'en', 'Spanish': 'es', 'French': 'fr',
 
 input_text_max_length = 2000
 
+use_deepspeed = False
+# if use_deepspeed:
+#    from utils.cuda_toolkit import install_cuda_toolkit
+#    logger.info("Installing CUDA toolkit...")
+#    install_cuda_toolkit()
+
+xtts_model = None
 def load_model():
+    global xtts_model
+    
     from TTS.tts.configs.xtts_config import XttsConfig
     from TTS.tts.models.xtts import Xtts
-
-    global xtts_model
     repo_id = "jimmyvu/xtts"
     
-    model_files = ["config.json", "vocab.json", "model.pth"]
+    model_files = ["config.json", "vocab.json", "harvard.wav", "model.pth"]
     for filename in model_files:
         if not os.path.exists(os.path.join(checkpoint_dir, filename)):
             logger.info(f"Downloading {filename} from Hugging Face...")
@@ -65,16 +72,19 @@ def load_model():
 
     logger.info("Loading model...")
     xtts_model.load_checkpoint(
-        config, checkpoint_dir=checkpoint_dir, use_deepspeed=True
+        config, checkpoint_dir=checkpoint_dir, use_deepspeed=use_deepspeed
     )
     if torch.cuda.is_available():
         xtts_model.cuda()
     logger.info(f"Successfully loaded model from {checkpoint_dir}")
 
+load_model()
+
 gpt_cond_latent_cache = {}
+@spaces.GPU
 def generate_speech(input_text, speaker_reference_audio, enhance_speech, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='English', *args):
     """Process text and generate audio."""
-    global df_model, df_state
+    global df_model, df_state, xtts_model
     log_messages = ""
     if len(input_text) > input_text_max_length:
         log_messages += "Text is too long! Please provide a shorter text.\n"
@@ -88,9 +98,9 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
         log_messages += "Please provide at least one reference audio!\n"
         return None, log_messages
 
-    if not xtts_model:
-        load_model()
-
+    start = time.time()
+    logger.info(f"Start processing text: {input_text[:30]}... [length: {len(input_text)}]")
+    
     language_code = language_dict.get(language, 'en')
     if language_code == 'vi':
         input_text = normalize_vietnamese_text(input_text)
@@ -128,19 +138,25 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
         sentences = sent_tokenize(input_text)
     # merge short sentences to next/prev ones
     sentences = merge_sentences(sentences)
-    
-    # set dynamic length penalty from -1.0 to 1,0 based on text length
-    max_text_length = 198
-    dynamic_length_penalty = lambda text_length: (2 * (min(max_text_length, text_length) / max_text_length)) - 1
     # inference
+    wav_array = inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temperature, top_p, top_k, repetition_penalty)
+    end = time.time()
+    logger.info(f"End processing text: {input_text[:30]}... Processing time: {end - start:.2f}s")
+    log_messages += f"Processing time: {end - start:.2f}s"
+    return (24000, wav_array), log_messages
+
+
+def inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temperature, top_p, top_k, repetition_penalty):
+    # set dynamic length penalty from -1.0 to 1,0 based on text length
+    max_text_length = 180
+    dynamic_length_penalty = lambda text_length: (2 * (min(max_text_length, text_length) / max_text_length)) - 1
+     # inference
     out_wavs = []
-    start = time.time()
-    logger.info(f"Start processing text: {input_text[:30]}... [length: {len(input_text)}]")
     for sentence in sentences:
         if len(sentence.strip()) == 0:
             continue
         # split too long sentence
-        texts = split_sentence(sentence) if len(sentence) >= max_text_length else [sentence]
+        texts = split_sentence(sentence) if len(sentence) > max_text_length else [sentence]
         for text in texts:
             # logger.info(f"Processing text: {text}")
             try:
@@ -159,13 +175,8 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
                 out_wavs.append(out["wav"])
             except Exception as e:
                 logger.error(f"Error processing text: {text} - {e}")
-                log_messages += f"Error processing text: {text} - {e}\n"
                 
-    end = time.time()
-    logger.info(f"End processing text: {input_text[:30]}... Processing time: {end - start:.2f}s")
-    log_messages += f"Processing time: {end - start:.2f}s\n"
-    return (24000, np.concatenate(out_wavs)), log_messages
-    
+    return np.concatenate(out_wavs)
 
 def build_gradio_ui():
     """Builds and launches the Gradio UI."""
@@ -173,15 +184,23 @@ def build_gradio_ui():
     setattr(theme, 'button_secondary_background_fill', '#fcd53f')
     setattr(theme, 'checkbox_border_color', '#02c160')
     setattr(theme, 'input-border-width', '1px')
-    setattr(theme, 'input-background-fill', 'transparent')
+    setattr(theme, 'input-background-fill', '#ffffff')
+    setattr(theme, 'input-background-fill_focus', '#ffffff')
     setattr(theme, 'input-border-color', '#d1d5db')
     setattr(theme, 'input-border-color_focus', '#fcd53f')
+
+    default_prompt = ("Hi, I'm a multilingual text-to-speech model. "
+                      "I can speak German: Hallo, wie geht es dir? "
+                      "And French: Bonjour mesdames et messieurs. "
+                      "I can also speak Vietnamese, Xin chào các bạn Việt Nam, "
+                      "and many other languages. ")
         
     with gr.Blocks(title="Coqui XTTS Demo", theme=theme) as ui:
         gr.Markdown(
           """
           # 🐸 Coqui-XTTS Text-to-Speech Demo
-          Convert text to speech with advanced voice cloning and enhancement. Support 18 languages, \u2605 **Vietnamese** \u2605 newly added.
+          Convert text to speech with advanced voice cloning and enhancement. 
+          Support 18 languages, \u2605 **Vietnamese** \u2605 newly added.
           """
         )
 
@@ -190,38 +209,23 @@ def build_gradio_ui():
             with gr.Column():
                 input_text = gr.Text(label="Enter Text Here", 
                                      placeholder="Write the text you want to convert...", 
+                                     value=default_prompt,
                                      lines=5, 
                                      max_length=input_text_max_length)
                 speaker_reference_audio = gr.Audio(
                     label="Speaker reference audio:",
-                    value=REFERENCE_AUDIO,
                     type="filepath",
                     editable=False,
                     min_length=3,
                     max_length=300,
+                    value=os.path.join(checkpoint_dir, 'harvard.wav')
                 )
                 enhance_speech = gr.Checkbox(label="Enhance Reference Audio", value=False)
-                language = gr.Dropdown(label="Target Language", choices=[
-                        'English', 'Spanish', 'French', 'German', 'Italian', 'Portuguese', 'Polish', 
-                        'Turkish', 'Russian', 'Dutch', 'Czech', 'Arabic', "Chinese", 
-                        'Hungarian', 'Korean', 'Japanese', 'Hindi', 'Vietnamese',
-                    ], value="Vietnamese")
-                with gr.Accordion("Advanced settings", open=False):
-                    temperature = gr.Slider(label="Temperature", minimum=0.1, maximum=1.0, value=0.3, step=0.05)
-                    top_p = gr.Slider(label="Top P", minimum=0.5, maximum=1.0, value=0.85, step=0.05)
-                    top_k = gr.Slider(label="Top K", minimum=0, maximum=100, value=50, step=5)
-                    repetition_penalty = gr.Slider(label="Repetition penalty", minimum=1.0, maximum=50.0, value=9.5, step=1.0)
-                    
+                language = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value="English")
                 generate_button = gr.Button("Generate Speech")
             with gr.Column():
                 audio_output = gr.Audio(label="Generated Audio")
                 log_output = gr.Text(label="Log Output")
-
-          generate_button.click(
-            generate_speech,
-            inputs=[input_text, speaker_reference_audio, enhance_speech, temperature, top_p, top_k, repetition_penalty, language],
-            outputs=[audio_output, log_output],
-          )
 
         with gr.Tab("Clone Your Voice"):
           with gr.Row():
@@ -232,23 +236,14 @@ def build_gradio_ui():
                                      max_length=input_text_max_length)
                 mic_ref_audio = gr.Audio(label="Record Reference Audio", sources=["microphone"])
                 enhance_speech_mic = gr.Checkbox(label="Enhance Reference Audio", value=True)
-                language_mic = gr.Dropdown(label="Target Language", choices=[
-                    'English', 'Spanish', 'French', 'German', 'Italian', 'Portuguese', 'Polish', 
-                    'Turkish', 'Russian', 'Dutch', 'Czech', 'Arabic', "Chinese", 
-                    'Hungarian', 'Korean', 'Japanese', 'Hindi', 'Vietnamese',
-                  ], value="Vietnamese")
-                with gr.Accordion("Advanced settings", open=False):
-                    temperature_mic = gr.Slider(label="Temperature", minimum=0.1, maximum=1.0, value=0.3, step=0.05)
-                    top_p_mic = gr.Slider(label="Top P", minimum=0.5, maximum=1.0, value=0.85, step=0.05)
-                    top_k_mic = gr.Slider(label="Top K", minimum=0, maximum=100, value=50, step=5)
-                    repetition_penalty_mic = gr.Slider(label="Repetition penalty", minimum=1.0, maximum=50.0, value=9.5, step=1.0)
+                language_mic = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value="English")
                 generate_button_mic = gr.Button("Generate Speech")
             with gr.Column():
                 audio_output_mic = gr.Audio(label="Generated Audio")
                 log_output_mic = gr.Text(label="Log Output")
 
-          
-          def process_mic_and_generate(input_text_mic, mic_ref_audio, enhance_speech_mic, temperature_mic, top_p_mic, top_k_mic, repetition_penalty_mic, language_mic):
+
+        def process_mic_and_generate(input_text_mic, mic_ref_audio, enhance_speech_mic, temperature, top_p, top_k, repetition_penalty, language_mic):
               if mic_ref_audio:
                   data = str(time.time()).encode("utf-8")
                   hash = hashlib.sha1(data).hexdigest()[:10]
@@ -256,22 +251,40 @@ def build_gradio_ui():
 
                   torch_audio = torch.from_numpy(mic_ref_audio[1].astype(float))
                   try:
-                      torchaudio.save(str(output_path), torch_audio.unsqueeze(0), mic_ref_audio[0])
-                      return generate_speech(input_text_mic, [Path(output_path)], enhance_speech_mic, temperature_mic, top_p_mic, top_k_mic, repetition_penalty_mic, language_mic)
+                      torchaudio.save(output_path, torch_audio.unsqueeze(0), mic_ref_audio[0])
+                      return generate_speech(input_text_mic, output_path, enhance_speech_mic, temperature, top_p, top_k, repetition_penalty, language_mic)
                   except Exception as e:
                       logger.error(f"Error saving audio file: {e}")
                       return None, f"Error saving audio file: {e}"
               else:
                   return None, "Please record an audio!"
 
-          generate_button_mic.click(
+        
+
+        with gr.Tab("Advanced Settings"):
+            with gr.Row():
+                with gr.Column():
+                    temperature = gr.Slider(label="Temperature", minimum=0.1, maximum=1.0, value=0.3, step=0.05)
+                    repetition_penalty = gr.Slider(label="Repetition penalty", minimum=1.0, maximum=50.0, value=9.5, step=1.0)
+                    
+                with gr.Column():
+                    top_p = gr.Slider(label="Top P", minimum=0.5, maximum=1.0, value=0.85, step=0.05)
+                    top_k = gr.Slider(label="Top K", minimum=0, maximum=100, value=50, step=5)
+                    
+        generate_button.click(
+            generate_speech,
+            inputs=[input_text, speaker_reference_audio, enhance_speech, temperature, top_p, top_k, repetition_penalty, language],
+            outputs=[audio_output, log_output],
+        )
+
+        generate_button_mic.click(
             process_mic_and_generate,
-            inputs=[input_text_mic, mic_ref_audio, enhance_speech_mic, temperature_mic, top_p_mic, top_k_mic, repetition_penalty_mic, language_mic],
+            inputs=[input_text_mic, mic_ref_audio, enhance_speech_mic, temperature, top_p, top_k, repetition_penalty, language_mic],
             outputs=[audio_output_mic, log_output_mic],
-          )
+        )
         
     return ui
 
 if __name__ == "__main__":
     ui = build_gradio_ui()
-    ui.launch(debug=True)
+    ui.launch(debug=False)

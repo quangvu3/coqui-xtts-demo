@@ -71,6 +71,8 @@ def load_model():
         xtts_model.cuda()
     logger.info(f"Successfully loaded model from {checkpoint_dir}")
 
+load_model()
+
 gpt_cond_latent_cache = {}
 def generate_speech(input_text, speaker_reference_audio, enhance_speech, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='English', *args):
     """Process text and generate audio."""
@@ -88,8 +90,8 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
         log_messages += "Please provide at least one reference audio!\n"
         return None, log_messages
 
-    if not xtts_model:
-        load_model()
+    # if not xtts_model:
+    #     load_model()
 
     language_code = language_dict.get(language, 'en')
     if language_code == 'vi':
@@ -130,7 +132,7 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
     sentences = merge_sentences(sentences)
     
     # set dynamic length penalty from -1.0 to 1,0 based on text length
-    max_text_length = 198
+    max_text_length = 180
     dynamic_length_penalty = lambda text_length: (2 * (min(max_text_length, text_length) / max_text_length)) - 1
     # inference
     out_wavs = []

@@ -62,7 +62,7 @@ def merge_sentences(sentences):
         word_count = len(s.split())
         j = 1
         # merge the short sentence to the next one until long enough
-        while word_count < 10 and i+j < len(sentences):
+        while word_count <= 6 and i+j < len(sentences):
             s += ' ' + sentences[i+j]
             word_count = len(s.split())
             j += 1

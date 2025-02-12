@@ -8,17 +8,17 @@ import gradio as gr
 import torch
 import torchaudio
 import numpy as np
-import spaces
 
-from huggingface_hub import hf_hub_download
+from underthesea import sent_tokenize
+from df.enhance import enhance, init_df, load_audio, save_audio
+
+from huggingface_hub import hf_hub_download, snapshot_download
+
+from langdetect import detect
 
 from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences
-
-from underthesea import sent_tokenize
-
-from df.enhance import enhance, init_df, load_audio, save_audio
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -27,28 +27,39 @@ logger = setup_logger(__file__)
 
 df_model, df_state = None, None
 
-checkpoint_dir="/tmp/xtts/model/"
-temp_dir="/tmp/xtts/temp/"
-enhance_audio_dir="/tmp/xtts/enhance/"
-for d in [checkpoint_dir, temp_dir, enhance_audio_dir]:
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+checkpoint_dir=f"{APP_DIR}/cache"
+temp_dir=f"{APP_DIR}/cache/temp/"
+sample_audio_dir=f"{APP_DIR}/cache/audio_samples/"
+enhance_audio_dir=f"{APP_DIR}/cache/audio_enhances/"
+for d in [checkpoint_dir, temp_dir, sample_audio_dir, enhance_audio_dir]:
     os.makedirs(d, exist_ok=True)
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+language_dict = {'English': 'en', 'Español (Spanish)': 'es', 'Français (French)': 'fr', 
+                 'Deutsch (German)': 'de', 'Italiano (Italian)': 'it', 'Português (Portuguese)': 'pt', 
+                 'Polski (Polish)': 'pl', 'Türkçe (Turkish)': 'tr', 'Русский (Russian)': 'ru', 
+                 'Nederlands (Dutch)': 'nl', 'Čeština (Czech)': 'cs', 'العربية (Arabic)': 'ar', '中文 (Chinese)': 'zh-cn',
+                 'Magyar nyelv (Hungarian)': 'hu', '한국어 (Korean)': 'ko', '日本語 (Japanese)': 'ja', 
+                 'Tiếng Việt (Vietnamese)': 'vi', 'Auto': 'auto'}
 
-language_dict = {'English': 'en', 'Spanish': 'es', 'French': 'fr', 
-                 'German': 'de', 'Italian': 'it', 'Portuguese': 'pt', 
-                 'Polish': 'pl', 'Turkish': 'tr', 'Russian': 'ru', 
-                 'Dutch': 'nl', 'Czech': 'cs', 'Arabic': 'ar', 'Chinese': 'zh-cn', 
-                 'Hungarian': 'hu', 'Korean': 'ko', 'Japanese': 'ja', 
-                 'Hindi': 'hi', 'Vietnamese': 'vi'}
+default_language = 'Auto'
+language_codes = [v for _, v in language_dict.items()]
+def lang_detect(text):
+    try:
+        lang = detect(text)
+        if lang == 'zh-tw':
+            return 'zh-cn'
+        return lang if lang in language_codes else 'en'
+    except:
+        return 'en'
 
-input_text_max_length = 2000
-
+input_text_max_length = 3000
 use_deepspeed = False
-# if use_deepspeed:
-#    from utils.cuda_toolkit import install_cuda_toolkit
-#    logger.info("Installing CUDA toolkit...")
-#    install_cuda_toolkit()
+
+try:
+    import spaces
+except ImportError:
+    from utils import spaces
 
 xtts_model = None
 def load_model():
@@ -57,21 +68,17 @@ def load_model():
     from TTS.tts.configs.xtts_config import XttsConfig
     from TTS.tts.models.xtts import Xtts
     repo_id = "jimmyvu/xtts"
-    
-    model_files = ["config.json", "vocab.json", "harvard.wav", "model.pth"]
-    for filename in model_files:
-        if not os.path.exists(os.path.join(checkpoint_dir, filename)):
-            logger.info(f"Downloading {filename} from Hugging Face...")
-            hf_hub_download(repo_id=repo_id, 
-                        filename=filename, 
-                        local_dir=checkpoint_dir)
+    snapshot_download(repo_id=repo_id, 
+                      local_dir=checkpoint_dir, 
+                      allow_patterns=["*.safetensors", "*.wav", "*.json"], 
+                      ignore_patterns="*.pth")
 
     config = XttsConfig()
     config.load_json(os.path.join(checkpoint_dir, "config.json"))
     xtts_model = Xtts.init_from_config(config)
 
     logger.info("Loading model...")
-    xtts_model.load_checkpoint(
+    xtts_model.load_safetensors_checkpoint(
         config, checkpoint_dir=checkpoint_dir, use_deepspeed=use_deepspeed
     )
     if torch.cuda.is_available():
@@ -80,31 +87,35 @@ def load_model():
 
 load_model()
 
-gpt_cond_latent_cache = {}
+default_speaker_reference_audio = os.path.join(sample_audio_dir, 'harvard.wav')
+
 @spaces.GPU
-def generate_speech(input_text, speaker_reference_audio, enhance_speech, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='English', *args):
+def generate_speech(input_text, speaker_reference_audio, enhance_speech, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='Auto', *args):
     """Process text and generate audio."""
     global df_model, df_state, xtts_model
     log_messages = ""
     if len(input_text) > input_text_max_length:
+        gr.Warning("Text is too long! Please provide a shorter text.")
         log_messages += "Text is too long! Please provide a shorter text.\n"
         return None, log_messages
 
-    if len(input_text) < 2:
+    language_code = language_dict.get(language, 'en')
+    logger.info(f"Language [{language}], code: [{language_code}]")
+    lang = lang_detect(input_text) if language_code == 'auto' else language_code
+    if (lang not in ['ja', 'kr', 'zh-cn'] and len(input_text.split()) < 2) or \
+        (lang in ['ja', 'kr', 'zh-cn'] and len(input_text) < 2):
+        gr.Warning("Text is too short! Please provide a longer text.")
         log_messages += "Text is too short! Please provide a longer text.\n"
         return None, log_messages
     
     if not speaker_reference_audio:
+        gr.Warning("Please provide at least one reference audio!")
         log_messages += "Please provide at least one reference audio!\n"
         return None, log_messages
 
     start = time.time()
     logger.info(f"Start processing text: {input_text[:30]}... [length: {len(input_text)}]")
     
-    language_code = language_dict.get(language, 'en')
-    if language_code == 'vi':
-        input_text = normalize_vietnamese_text(input_text)
-
     if enhance_speech:
         logger.info("Enhancing reference audio...")
         _, audio_file = os.path.split(speaker_reference_audio)
@@ -119,20 +130,15 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
             save_audio(enhanced_audio_path, enhanced_audio, sr=df_state.sr())
         speaker_reference_audio = enhanced_audio_path
 
-    speaker_hash = hashlib.sha1(speaker_reference_audio.encode("utf-8")).hexdigest()
-    if speaker_hash not in gpt_cond_latent_cache:
-        gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
-            audio_path=speaker_reference_audio,
-            gpt_cond_len=xtts_model.config.gpt_cond_len,
-            max_ref_length=xtts_model.config.max_ref_len,
-            sound_norm_refs=xtts_model.config.sound_norm_refs,
-        )
-        gpt_cond_latent_cache[speaker_hash] = (gpt_cond_latent, speaker_embedding)
-    else:
-        gpt_cond_latent, speaker_embedding = gpt_cond_latent_cache[speaker_hash]
+    gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
+        audio_path=speaker_reference_audio,
+        gpt_cond_len=xtts_model.config.gpt_cond_len,
+        max_ref_length=xtts_model.config.max_ref_len,
+        sound_norm_refs=xtts_model.config.sound_norm_refs,
+    )
     
     # Split text by sentence
-    if language_code in ["ja", "zh-cn"]:
+    if lang in ["ja", "zh-cn"]:
         sentences = input_text.split("。")
     else:
         sentences = sent_tokenize(input_text)
@@ -155,14 +161,17 @@ def inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temp
     for sentence in sentences:
         if len(sentence.strip()) == 0:
             continue
+        lang = lang_detect(sentence) if language_code == 'auto' else language_code
+        if lang == 'vi':
+            sentence = normalize_vietnamese_text(sentence)
         # split too long sentence
         texts = split_sentence(sentence) if len(sentence) > max_text_length else [sentence]
         for text in texts:
-            # logger.info(f"Processing text: {text}")
+            logger.info(f"[{lang}] {text}")
             try:
                 out = xtts_model.inference(
                     text=text,
-                    language=language_code,
+                    language=lang,
                     gpt_cond_latent=gpt_cond_latent,
                     speaker_embedding=speaker_embedding,
                     temperature=temperature,
@@ -170,7 +179,7 @@ def inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temp
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
                     length_penalty=dynamic_length_penalty(len(text)),
-                    enable_text_splitting=False,
+                    enable_text_splitting=True,
                 )
                 out_wavs.append(out["wav"])
             except Exception as e:
@@ -189,18 +198,19 @@ def build_gradio_ui():
     setattr(theme, 'input-border-color', '#d1d5db')
     setattr(theme, 'input-border-color_focus', '#fcd53f')
 
-    default_prompt = ("Hi, I'm a multilingual text-to-speech model. "
-                      "I can speak German: Hallo, wie geht es dir? "
-                      "And French: Bonjour mesdames et messieurs. "
-                      "I can also speak Vietnamese, Xin chào các bạn Việt Nam, "
-                      "and many other languages. ")
+    default_prompt = ("Hi, I am a multilingual text-to-speech AI model.\n"
+                      "Bonjour, je suis un modèle d'IA de synthèse vocale multilingue.\n"
+                      "Hallo, ich bin ein mehrsprachiges Text-zu-Sprache KI-Modell.\n"
+                      "Ciao, sono un modello di intelligenza artificiale di sintesi vocale multilingue.\n"
+                      "Привет, я многоязычная модель искусственного интеллекта, преобразующая текст в речь.\n"
+                      "Xin chào, tôi là một mô hình AI chuyển đổi văn bản thành giọng nói đa ngôn ngữ.\n")
         
     with gr.Blocks(title="Coqui XTTS Demo", theme=theme) as ui:
         gr.Markdown(
           """
           # 🐸 Coqui-XTTS Text-to-Speech Demo
           Convert text to speech with advanced voice cloning and enhancement. 
-          Support 18 languages, \u2605 **Vietnamese** \u2605 newly added.
+          Support 17 languages, \u2605 **Vietnamese** \u2605 newly added.
           """
         )
 
@@ -218,10 +228,10 @@ def build_gradio_ui():
                     editable=False,
                     min_length=3,
                     max_length=300,
-                    value=os.path.join(checkpoint_dir, 'harvard.wav')
+                    value=default_speaker_reference_audio
                 )
                 enhance_speech = gr.Checkbox(label="Enhance Reference Audio", value=False)
-                language = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value="English")
+                language = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value=default_language)
                 generate_button = gr.Button("Generate Speech")
             with gr.Column():
                 audio_output = gr.Audio(label="Generated Audio")
@@ -236,7 +246,7 @@ def build_gradio_ui():
                                      max_length=input_text_max_length)
                 mic_ref_audio = gr.Audio(label="Record Reference Audio", sources=["microphone"])
                 enhance_speech_mic = gr.Checkbox(label="Enhance Reference Audio", value=True)
-                language_mic = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value="English")
+                language_mic = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value=default_language)
                 generate_button_mic = gr.Button("Generate Speech")
             with gr.Column():
                 audio_output_mic = gr.Audio(label="Generated Audio")
@@ -258,8 +268,6 @@ def build_gradio_ui():
                       return None, f"Error saving audio file: {e}"
               else:
                   return None, "Please record an audio!"
-
-        
 
         with gr.Tab("Advanced Settings"):
             with gr.Row():

@@ -192,6 +192,7 @@ def _convert_decimal_part(decimal_part):
 
 # abbreviation replacement    
 abbreviation_map = {
+    "AI": "Ây Ai",
     "ASEAN": "A Xê An",
     "ATGT": "An toàn giao thông",
     "BCA": "Bộ Công an",
@@ -265,6 +266,7 @@ abbreviation_map = {
     "TTCK": "Thị trường chứng khoán",
     "TTTC": "Thị trường tài chính",
     "TTCP": "Thủ tướng chính phủ",
+    "TTNT": "Trí tuệ nhân tạo",
     "TTXVN": "Thông tấn xã Việt Nam",
     "TƯ": "Trung ương",
     "TW": "Trung ương",

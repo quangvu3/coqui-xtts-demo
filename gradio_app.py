@@ -1,8 +1,9 @@
 import os
+import sys
 import time
-import uuid
 import hashlib
-from pathlib import Path
+import site
+import subprocess
 
 import gradio as gr
 import torch
@@ -12,7 +13,7 @@ import numpy as np
 from underthesea import sent_tokenize
 from df.enhance import enhance, init_df, load_audio, save_audio
 
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import snapshot_download
 
 from langdetect import detect
 
@@ -64,9 +65,10 @@ except ImportError:
 xtts_model = None
 def load_model():
     global xtts_model
-    
+
     from TTS.tts.configs.xtts_config import XttsConfig
     from TTS.tts.models.xtts import Xtts
+    
     repo_id = "jimmyvu/xtts"
     snapshot_download(repo_id=repo_id, 
                       local_dir=checkpoint_dir, 
@@ -86,6 +88,15 @@ def load_model():
     logger.info(f"Successfully loaded model from {checkpoint_dir}")
 
 load_model()
+
+def download_unidic():
+    site_package_path = site.getsitepackages()[0]
+    unidic_path = os.path.join(site_package_path, "unidic", "dicdir")
+    if not os.path.exists(unidic_path):
+        logger.info("Downloading unidic...")
+        subprocess.call([sys.executable, "-m", "unidic", "download"])
+
+download_unidic()
 
 default_speaker_reference_audio = os.path.join(sample_audio_dir, 'harvard.wav')
 
@@ -189,15 +200,6 @@ def inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temp
 
 def build_gradio_ui():
     """Builds and launches the Gradio UI."""
-    theme=gr.Theme.from_hub('JohnSmith9982/small_and_pretty')
-    setattr(theme, 'button_secondary_background_fill', '#fcd53f')
-    setattr(theme, 'checkbox_border_color', '#02c160')
-    setattr(theme, 'input-border-width', '1px')
-    setattr(theme, 'input-background-fill', '#ffffff')
-    setattr(theme, 'input-background-fill_focus', '#ffffff')
-    setattr(theme, 'input-border-color', '#d1d5db')
-    setattr(theme, 'input-border-color_focus', '#fcd53f')
-
     default_prompt = ("Hi, I am a multilingual text-to-speech AI model.\n"
                       "Bonjour, je suis un modèle d'IA de synthèse vocale multilingue.\n"
                       "Hallo, ich bin ein mehrsprachiges Text-zu-Sprache KI-Modell.\n"
@@ -205,7 +207,7 @@ def build_gradio_ui():
                       "Привет, я многоязычная модель искусственного интеллекта, преобразующая текст в речь.\n"
                       "Xin chào, tôi là một mô hình AI chuyển đổi văn bản thành giọng nói đa ngôn ngữ.\n")
         
-    with gr.Blocks(title="Coqui XTTS Demo", theme=theme) as ui:
+    with gr.Blocks(title="Coqui XTTS Demo", theme='jimmyvu/small_and_pretty') as ui:
         gr.Markdown(
           """
           # 🐸 Coqui-XTTS Text-to-Speech Demo

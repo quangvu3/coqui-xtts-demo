@@ -150,7 +150,7 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech=False, t
     # merge short sentences to next/prev ones
     sentences = merge_sentences(sentences)
     # inference
-    wav_array = inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temperature, top_p, top_k, repetition_penalty)
+    wav_array = inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temperature, top_p, top_k, float(repetition_penalty))
     end = time.time()
     logger.info(f"End processing text: {input_text[:50]}... Processing time: {end - start:.2f}s")
     return (24000, wav_array)

@@ -33,6 +33,7 @@ checkpoint_dir=f"{APP_DIR}/cache"
 temp_dir=f"{APP_DIR}/cache/temp/"
 sample_audio_dir=f"{APP_DIR}/cache/audio_samples/"
 enhance_audio_dir=f"{APP_DIR}/cache/audio_enhances/"
+speakers_dir=f"{APP_DIR}/cache/speakers/"
 for d in [checkpoint_dir, temp_dir, sample_audio_dir, enhance_audio_dir]:
     os.makedirs(d, exist_ok=True)
 
@@ -87,7 +88,8 @@ def load_model():
         xtts_model.cuda()
     logger.info(f"Successfully loaded model from {checkpoint_dir}")
 
-load_model()
+load_model()    
+    
 
 def download_unidic():
     site_package_path = site.getsitepackages()[0]
@@ -99,24 +101,61 @@ def download_unidic():
 download_unidic()
 
 default_speaker_reference_audio = os.path.join(sample_audio_dir, 'harvard.wav')
+default_speaker_id = "Aaron Dreschner"
 
-@spaces.GPU
-def generate_speech(input_text, speaker_reference_audio, enhance_speech, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='Auto', *args):
-    """Process text and generate audio."""
-    global df_model, df_state, xtts_model
+def validate_input(input_text, language):
     log_messages = ""
     if len(input_text) > input_text_max_length:
         gr.Warning("Text is too long! Please provide a shorter text.")
         log_messages += "Text is too long! Please provide a shorter text.\n"
-        return None, log_messages
-
+        return log_messages
+    
     language_code = language_dict.get(language, 'en')
     logger.info(f"Language [{language}], code: [{language_code}]")
-    lang = lang_detect(input_text) if language_code == 'auto' else language_code
+    lang = lang_detect(input_text) if language == 'Auto' else language_code
     if (lang not in ['ja', 'kr', 'zh-cn'] and len(input_text.split()) < 2) or \
         (lang in ['ja', 'kr', 'zh-cn'] and len(input_text) < 2):
         gr.Warning("Text is too short! Please provide a longer text.")
         log_messages += "Text is too short! Please provide a longer text.\n"
+        
+    return log_messages
+    
+@spaces.GPU
+def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='Auto'):
+    """Process text and generate audio."""
+    global xtts_model
+    log_messages = validate_input(input_text, language)
+    if log_messages: 
+        return None, log_messages
+
+    start = time.time()
+    logger.info(f"Start processing text: {input_text[:30]}... [length: {len(input_text)}]")
+    # inference
+    wav_array, num_of_tokens = inference(input_text=input_text, 
+                          language=language,
+                          speaker_id=speaker_id, 
+                          gpt_cond_latent=None, 
+                          speaker_embedding=None, 
+                          temperature=temperature, 
+                          top_p=top_p, 
+                          top_k=top_k, 
+                          repetition_penalty=float(repetition_penalty))
+    end = time.time()
+    processing_time = end - start
+    tokens_per_second = num_of_tokens/processing_time
+    logger.info(f"End processing text: {input_text[:30]}")
+    message = f"💡 {tokens_per_second:.1f} tok/s • {num_of_tokens} tokens • in {processing_time:.2f} seconds"
+    logger.info(message)
+    log_messages += message
+    return (24000, wav_array), log_messages
+    
+
+@spaces.GPU
+def generate_speech(input_text, speaker_reference_audio, enhance_speech, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='Auto'):
+    """Process text and generate audio."""
+    global df_model, df_state, xtts_model
+    log_messages = validate_input(input_text, language)
+    if log_messages: 
         return None, log_messages
     
     if not speaker_reference_audio:
@@ -148,58 +187,77 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
         sound_norm_refs=xtts_model.config.sound_norm_refs,
     )
     
+    # inference
+    wav_array, num_of_tokens = inference(input_text=input_text, 
+                          language=language,
+                          speaker_id=None, 
+                          gpt_cond_latent=gpt_cond_latent, 
+                          speaker_embedding=speaker_embedding, 
+                          temperature=temperature, 
+                          top_p=top_p, 
+                          top_k=top_k, 
+                          repetition_penalty=float(repetition_penalty))
+    end = time.time()
+    processing_time = end - start
+    tokens_per_second = num_of_tokens/processing_time
+    logger.info(f"End processing text: {input_text[:30]}")
+    message = f"💡 {tokens_per_second:.1f} tok/s • {num_of_tokens} tokens • in {processing_time:.2f} seconds"
+    logger.info(message)
+    log_messages += message
+    return (24000, wav_array), log_messages
+
+
+def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0):
+    language_code = lang_detect(input_text) if language == 'Auto' else language_dict.get(language, 'en')
     # Split text by sentence
-    if lang in ["ja", "zh-cn"]:
+    if language_code in ["ja", "zh-cn"]:
         sentences = input_text.split("。")
     else:
         sentences = sent_tokenize(input_text)
     # merge short sentences to next/prev ones
     sentences = merge_sentences(sentences)
-    # inference
-    wav_array = inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temperature, top_p, top_k, float(repetition_penalty))
-    end = time.time()
-    logger.info(f"End processing text: {input_text[:30]}... Processing time: {end - start:.2f}s")
-    log_messages += f"Processing time: {end - start:.2f}s"
-    return (24000, wav_array), log_messages
-
-
-def inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temperature, top_p, top_k, repetition_penalty):
+    
     # set dynamic length penalty from -1.0 to 1,0 based on text length
     max_text_length = 180
     dynamic_length_penalty = lambda text_length: (2 * (min(max_text_length, text_length) / max_text_length)) - 1
-     # inference
+
+    if speaker_id is not None:
+        gpt_cond_latent, speaker_embedding = xtts_model.speaker_manager.speakers[speaker_id].values()
+
+    # inference
     out_wavs = []
+    num_of_tokens = 0
     for sentence in sentences:
         if len(sentence.strip()) == 0:
             continue
-        lang = lang_detect(sentence) if language_code == 'auto' else language_code
+        lang = lang_detect(sentence) if language == 'Auto' else language_code
         if lang == 'vi':
             sentence = normalize_vietnamese_text(sentence)
-        # split too long sentence
-        texts = split_sentence(sentence) if len(sentence) > max_text_length else [sentence]
-        for text in texts:
-            logger.info(f"[{lang}] {text}")
-            try:
-                out = xtts_model.inference(
-                    text=text,
-                    language=lang,
-                    gpt_cond_latent=gpt_cond_latent,
-                    speaker_embedding=speaker_embedding,
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    repetition_penalty=repetition_penalty,
-                    length_penalty=dynamic_length_penalty(len(text)),
-                    enable_text_splitting=True,
-                )
-                out_wavs.append(out["wav"])
-            except Exception as e:
-                logger.error(f"Error processing text: {text} - {e}")
-                
-    return np.concatenate(out_wavs)
+        text_tokens = torch.IntTensor(xtts_model.tokenizer.encode(sentence, lang=lang)).unsqueeze(0).to(xtts_model.device)
+        num_of_tokens += text_tokens.shape[-1]
+        logger.info(f"[{lang}] {sentence}")
+        try:
+            out = xtts_model.inference(
+                text=sentence,
+                language=lang,
+                gpt_cond_latent=gpt_cond_latent,
+                speaker_embedding=speaker_embedding,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                length_penalty=dynamic_length_penalty(len(sentence)),
+                enable_text_splitting=True,
+            )
+            out_wavs.append(out["wav"])
+        except Exception as e:
+            logger.error(f"Error processing text: {sentence} - {e}")            
+    return np.concatenate(out_wavs), num_of_tokens
+
 
 def build_gradio_ui():
     """Builds and launches the Gradio UI."""
+    
     default_prompt = ("Hi, I am a multilingual text-to-speech AI model.\n"
                       "Bonjour, je suis un modèle d'IA de synthèse vocale multilingue.\n"
                       "Hallo, ich bin ein mehrsprachiges Text-zu-Sprache KI-Modell.\n"
@@ -216,12 +274,28 @@ def build_gradio_ui():
           """
         )
 
-        with gr.Tab("Text to Speech"):
+        with gr.Tab("Built-in Voice"):
           with gr.Row():
             with gr.Column():
                 input_text = gr.Text(label="Enter Text Here", 
-                                     placeholder="Write the text you want to convert...", 
+                                     placeholder="Write the text you want to synthesize...", 
                                      value=default_prompt,
+                                     lines=5, 
+                                     max_length=input_text_max_length)
+                
+                speaker_id = gr.Dropdown(label="Speaker", choices=[k for k in xtts_model.speaker_manager.speakers.keys()], value=default_speaker_id)
+                language = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value=default_language)
+                synthesize_button = gr.Button("Generate Speech")
+            with gr.Column():
+                audio_output = gr.Audio(label="Generated Audio")
+                log_output = gr.Text(label="Log Output")
+
+
+        with gr.Tab("Reference Voice"):
+          with gr.Row():
+            with gr.Column():
+                input_text_generate = gr.Text(label="Enter Text Here", 
+                                     placeholder="Write the text you want to synthesize...", 
                                      lines=5, 
                                      max_length=input_text_max_length)
                 speaker_reference_audio = gr.Audio(
@@ -233,17 +307,17 @@ def build_gradio_ui():
                     value=default_speaker_reference_audio
                 )
                 enhance_speech = gr.Checkbox(label="Enhance Reference Audio", value=False)
-                language = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value=default_language)
+                language_generate = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value=default_language)
                 generate_button = gr.Button("Generate Speech")
             with gr.Column():
-                audio_output = gr.Audio(label="Generated Audio")
-                log_output = gr.Text(label="Log Output")
+                audio_output_generate = gr.Audio(label="Generated Audio")
+                log_output_generate = gr.Text(label="Log Output")
 
         with gr.Tab("Clone Your Voice"):
           with gr.Row():
             with gr.Column():
                 input_text_mic = gr.Text(label="Enter Text Here", 
-                                     placeholder="Write the text you want to convert...", 
+                                     placeholder="Write the text you want to synthesize...", 
                                      lines=5, 
                                      max_length=input_text_max_length)
                 mic_ref_audio = gr.Audio(label="Record Reference Audio", sources=["microphone"])
@@ -280,11 +354,17 @@ def build_gradio_ui():
                 with gr.Column():
                     top_p = gr.Slider(label="Top P", minimum=0.5, maximum=1.0, value=0.85, step=0.05)
                     top_k = gr.Slider(label="Top K", minimum=0, maximum=100, value=50, step=5)
-                    
+        
+        synthesize_button.click(
+            synthesize_speech,
+            inputs=[input_text, speaker_id, temperature, top_p, top_k, repetition_penalty, language],
+            outputs=[audio_output, log_output],
+        )
+        
         generate_button.click(
             generate_speech,
-            inputs=[input_text, speaker_reference_audio, enhance_speech, temperature, top_p, top_k, repetition_penalty, language],
-            outputs=[audio_output, log_output],
+            inputs=[input_text_generate, speaker_reference_audio, enhance_speech, temperature, top_p, top_k, repetition_penalty, language_generate],
+            outputs=[audio_output_generate, log_output_generate],
         )
 
         generate_button_mic.click(

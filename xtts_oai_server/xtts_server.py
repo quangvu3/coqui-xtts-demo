@@ -96,100 +96,79 @@ def download_unidic():
 
 download_unidic()
 
-default_speaker_reference_audio = os.path.join(sample_audio_dir, 'harvard.wav')
+default_speaker_id = "Aaron Dreschner"
 
-def generate_speech(input_text, speaker_reference_audio, enhance_speech=False, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='Auto', *args):
+def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='Auto'):
     """Process text and generate audio."""
-    global df_model, df_state, xtts_model
-    log_messages = ""
-    if len(input_text) > input_text_max_length:
-        logger.error("Text is too long! Please provide a shorter text.")
-        return None
-
-    language_code = language_dict.get(language, 'en')
-    logger.info(f"Language [{language}], code: [{language_code}]")
-    lang = lang_detect(input_text) if language_code == 'auto' else language_code
-    if (lang not in ['ja', 'kr', 'zh-cn'] and len(input_text.split()) < 2) or \
-        (lang in ['ja', 'kr', 'zh-cn'] and len(input_text) < 2):
-        logger.error("Text is too short! Please provide a longer text.")
-        return None
+    global xtts_model
     
-    if not speaker_reference_audio:
-        logger.warning("Please provide at least one reference audio!")
-        return None
-
     start = time.time()
     logger.info(f"Start processing text: {input_text[:30]}... [length: {len(input_text)}]")
-    
-    if enhance_speech:
-        logger.info("Enhancing reference audio...")
-        _, audio_file = os.path.split(speaker_reference_audio)
-        enhanced_audio_path = os.path.join(enhance_audio_dir, f"{audio_file}.enh.wav")
-        if not os.path.exists(enhanced_audio_path):
-            if not df_model:
-                df_model, df_state, _ = init_df()
-            audio, _ = load_audio(speaker_reference_audio, sr=df_state.sr())
-            # denoise audio
-            enhanced_audio = enhance(df_model, df_state, audio)
-            # save enhanced audio
-            save_audio(enhanced_audio_path, enhanced_audio, sr=df_state.sr())
-        speaker_reference_audio = enhanced_audio_path
+    # inference
+    wav_array, num_of_tokens = inference(input_text=input_text, 
+                          language=language,
+                          speaker_id=speaker_id, 
+                          gpt_cond_latent=None, 
+                          speaker_embedding=None, 
+                          temperature=temperature, 
+                          top_p=top_p, 
+                          top_k=top_k, 
+                          repetition_penalty=float(repetition_penalty))
+    end = time.time()
+    processing_time = end - start
+    tokens_per_second = num_of_tokens/processing_time
+    logger.info(f"End processing text: {input_text[:30]}")
+    message = f"💡 {tokens_per_second:.1f} tok/s • {num_of_tokens} tokens • in {processing_time:.2f} seconds"
+    logger.info(message)
+    return (24000, wav_array)
 
-    gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
-        audio_path=speaker_reference_audio,
-        gpt_cond_len=xtts_model.config.gpt_cond_len,
-        max_ref_length=xtts_model.config.max_ref_len,
-        sound_norm_refs=xtts_model.config.sound_norm_refs,
-    )
-    
+
+def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0):
+    language_code = lang_detect(input_text) if language == 'Auto' else language_dict.get(language, 'en')
     # Split text by sentence
-    if lang in ["ja", "zh-cn"]:
+    if language_code in ["ja", "zh-cn"]:
         sentences = input_text.split("。")
     else:
         sentences = sent_tokenize(input_text)
     # merge short sentences to next/prev ones
     sentences = merge_sentences(sentences)
-    # inference
-    wav_array = inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temperature, top_p, top_k, float(repetition_penalty))
-    end = time.time()
-    logger.info(f"End processing text: {input_text[:50]}... Processing time: {end - start:.2f}s")
-    return (24000, wav_array)
-
-
-def inference(sentences, language_code, gpt_cond_latent, speaker_embedding, temperature, top_p, top_k, repetition_penalty):
+    
     # set dynamic length penalty from -1.0 to 1,0 based on text length
     max_text_length = 180
     dynamic_length_penalty = lambda text_length: (2 * (min(max_text_length, text_length) / max_text_length)) - 1
-     # inference
+
+    if speaker_id is not None:
+        gpt_cond_latent, speaker_embedding = xtts_model.speaker_manager.speakers[speaker_id].values()
+
+    # inference
     out_wavs = []
+    num_of_tokens = 0
     for sentence in sentences:
         if len(sentence.strip()) == 0:
             continue
-        lang = lang_detect(sentence) if language_code == 'auto' else language_code
+        lang = lang_detect(sentence) if language == 'Auto' else language_code
         if lang == 'vi':
             sentence = normalize_vietnamese_text(sentence)
-        # split too long sentence
-        texts = split_sentence(sentence) if len(sentence) > max_text_length else [sentence]
-        for text in texts:
-            logger.info(f"[{lang}] {text}")
-            try:
-                out = xtts_model.inference(
-                    text=text,
-                    language=lang,
-                    gpt_cond_latent=gpt_cond_latent,
-                    speaker_embedding=speaker_embedding,
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    repetition_penalty=repetition_penalty,
-                    length_penalty=dynamic_length_penalty(len(text)),
-                    enable_text_splitting=True,
-                )
-                out_wavs.append(out["wav"])
-            except Exception as e:
-                logger.error(f"Error processing text: {text} - {e}")
-                
-    return np.concatenate(out_wavs)
+        text_tokens = torch.IntTensor(xtts_model.tokenizer.encode(sentence, lang=lang)).unsqueeze(0).to(xtts_model.device)
+        num_of_tokens += text_tokens.shape[-1]
+        logger.info(f"[{lang}] {sentence}")
+        try:
+            out = xtts_model.inference(
+                text=sentence,
+                language=lang,
+                gpt_cond_latent=gpt_cond_latent,
+                speaker_embedding=speaker_embedding,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                length_penalty=dynamic_length_penalty(len(sentence)),
+                enable_text_splitting=True,
+            )
+            out_wavs.append(out["wav"])
+        except Exception as e:
+            logger.error(f"Error processing text: {sentence} - {e}")            
+    return np.concatenate(out_wavs), num_of_tokens
 
 
 async def handle_speech_request(request):
@@ -202,14 +181,13 @@ async def handle_speech_request(request):
         if not text_to_speak:
             return web.json_response({"error": "Missing or empty 'text' field"}, status=400)
 
-        speaker_reference_audio = request_data.get('reference_audio', 'female_neural.vi.wav')
+        speaker_id = request_data.get('speaker', default_speaker_id)
 
         # Initialize the text-to-speech engine.
-        speaker_reference_audio_path = os.path.join(sample_audio_dir, speaker_reference_audio)
-        if not os.path.exists(speaker_reference_audio_path):
-            return web.json_response({"Error": f"Invalid reference audio [{speaker_reference_audio}]"}, status=400)
+        if speaker_id not in xtts_model.speaker_manager.speakers:
+            return web.json_response({"Error": f"Invalid speaker: [{speaker_id}]"}, status=400)
         
-        sample_rate, wav_array = generate_speech(text_to_speak, speaker_reference_audio=speaker_reference_audio_path)
+        sample_rate, wav_array = synthesize_speech(text_to_speak, speaker_id=speaker_id)
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
             tmp_file_path = tmp_file.name

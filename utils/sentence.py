@@ -1,5 +1,5 @@
 
-def split_sentence(sentence, delimiters=",;-!?"):
+def split_sentence(sentence, max_text_length=180, delimiters=",;-!?"):
     """
     Splits a sentence into two halves, prioritizing the delimiter closest to the middle.
     If no delimiter is found, it ensures words are not split in the middle.
@@ -11,6 +11,9 @@ def split_sentence(sentence, delimiters=",;-!?"):
     Returns:
         tuple: A tuple containing the two halves of the sentence.
     """
+    if len(sentence) < max_text_length:
+        return [sentence]
+
     # Find all delimiter indices in the sentence
     delimiter_indices = [i for i, char in enumerate(sentence) if char in delimiters]
 
@@ -50,7 +53,8 @@ def split_sentence(sentence, delimiters=",;-!?"):
         first_half = sentence[:split_index].strip()
         second_half = sentence[split_index:].strip()
 
-    return first_half, second_half
+    return split_sentence(first_half, max_text_length=max_text_length) \
+        + split_sentence(second_half, max_text_length=max_text_length)
 
 
 def merge_sentences(sentences):

@@ -235,23 +235,25 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
             sentence = normalize_vietnamese_text(sentence)
         text_tokens = torch.IntTensor(xtts_model.tokenizer.encode(sentence, lang=lang)).unsqueeze(0).to(xtts_model.device)
         num_of_tokens += text_tokens.shape[-1]
-        logger.info(f"[{lang}] {sentence}")
-        try:
-            out = xtts_model.inference(
-                text=sentence,
-                language=lang,
-                gpt_cond_latent=gpt_cond_latent,
-                speaker_embedding=speaker_embedding,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                length_penalty=dynamic_length_penalty(len(sentence)),
-                enable_text_splitting=True,
-            )
-            out_wavs.append(out["wav"])
-        except Exception as e:
-            logger.error(f"Error processing text: {sentence} - {e}")            
+        txts = split_sentence(sentence, max_text_length=max_text_length)
+        for txt in txts:
+            logger.info(f"[{lang}] {txt}")
+            try:
+                out = xtts_model.inference(
+                    text=txt,
+                    language=lang,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                    length_penalty=dynamic_length_penalty(len(sentence)),
+                    enable_text_splitting=False,
+                )
+                out_wavs.append(out["wav"])
+            except Exception as e:
+                logger.error(f"Error processing text: {e}")
     return np.concatenate(out_wavs), num_of_tokens
 
 

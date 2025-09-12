@@ -24,7 +24,7 @@ sys.path.append(APP_DIR)
 
 from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
-from utils.sentence import split_sentence, merge_sentences
+from utils.sentence import split_sentence, merge_sentences, merge_sentences_balanced
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -98,12 +98,13 @@ download_unidic()
 
 default_speaker_id = "Aaron Dreschner"
 
-def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='Auto'):
+def synthesize_speech(input_text, speaker_id, temperature=0.2, top_p=0.85, top_k=70, repetition_penalty=9.0, language='Auto'):
     """Process text and generate audio."""
     global xtts_model
     
     start = time.time()
     logger.info(f"Start processing text: {input_text[:30]}... [length: {len(input_text)}]")
+    logger.info(f"Speaker ID: {speaker_id}")
     # inference
     wav_array, num_of_tokens = inference(input_text=input_text, 
                           language=language,
@@ -120,18 +121,64 @@ def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k
     logger.info(f"End processing text: {input_text[:30]}")
     message = f"💡 {tokens_per_second:.1f} tok/s • {num_of_tokens} tokens • in {processing_time:.2f} seconds"
     logger.info(message)
-    return (24000, wav_array)
+    return (xtts_model.config.audio.sample_rate, wav_array)
 
 
-def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0):
+def add_silence_to_wav_array(wav_array, sample_rate=24000, silence_ms=1000):
+    """Add silence to the end of a wav numpy array"""
+    # Calculate number of silence samples needed
+    silence_samples = int((silence_ms / 1000.0) * sample_rate)
+    
+    # Create silence array (zeros)
+    silence = np.zeros(silence_samples, dtype=wav_array.dtype)
+    
+    # Concatenate original audio with silence
+    return np.concatenate([wav_array, silence])
+
+def calculate_keep_len(text, lang):
+    """Simple hack for short sentences"""
+    if lang in ["ja", "zh-cn"]:
+        return -1
+
+    word_count = len(text.split())
+    num_punct = text.count(".") + text.count("!") + text.count("?") + text.count(",")
+
+    if word_count < 5:
+        return 15000 * word_count + 2000 * num_punct
+    elif word_count < 10:
+        return 13000 * word_count + 2000 * num_punct
+    return -1
+    
+def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, 
+              temperature=0.2, top_p=0.85, top_k=70, repetition_penalty=10.0, sentence_silence_ms=500):
+    """
+    Generate speech from text with silence padding options.
+    
+    Args:
+        input_text: Text to synthesize
+        language: Target language
+        speaker_id: Speaker identifier for voice cloning
+        gpt_cond_latent: GPT conditioning latent (optional)
+        speaker_embedding: Speaker embedding (optional)
+        temperature: Sampling temperature
+        top_p: Top-p sampling parameter
+        top_k: Top-k sampling parameter
+        repetition_penalty: Repetition penalty factor
+        sentence_silence_ms: Silence to add after each sentence (milliseconds)
+    
+    Returns:
+        tuple: (final_wav_array, num_of_tokens)
+    """
     language_code = lang_detect(input_text) if language == 'Auto' else language_dict.get(language, 'en')
+    
     # Split text by sentence
     if language_code in ["ja", "zh-cn"]:
         sentences = input_text.split("。")
     else:
         sentences = sent_tokenize(input_text)
+    
     # merge short sentences to next/prev ones
-    sentences = merge_sentences(sentences)
+    sentences = merge_sentences_balanced(sentences)
     
     # set dynamic length penalty from -1.0 to 1,0 based on text length
     max_text_length = 180
@@ -143,15 +190,19 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
     # inference
     out_wavs = []
     num_of_tokens = 0
-    for sentence in sentences:
+    
+    for i, sentence in enumerate(sentences):
         if len(sentence.strip()) == 0:
             continue
+            
         lang = lang_detect(sentence) if language == 'Auto' else language_code
         if lang == 'vi':
             sentence = normalize_vietnamese_text(sentence)
+            
         text_tokens = torch.IntTensor(xtts_model.tokenizer.encode(sentence, lang=lang)).unsqueeze(0).to(xtts_model.device)
         num_of_tokens += text_tokens.shape[-1]
         logger.info(f"[{lang}] {sentence}")
+        
         try:
             out = xtts_model.inference(
                 text=sentence,
@@ -165,10 +216,30 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                 length_penalty=dynamic_length_penalty(len(sentence)),
                 enable_text_splitting=True,
             )
-            out_wavs.append(out["wav"])
+            
+            sentence_wav = out["wav"][:calculate_keep_len(sentence, lang)]
+            
+            # Add silence after each sentence (except the last one)
+            if sentence_silence_ms > 0 and i < len(sentences) - 1:
+                sentence_wav = add_silence_to_wav_array(
+                    sentence_wav, 
+                    sample_rate=xtts_model.config.audio.sample_rate, 
+                    silence_ms=sentence_silence_ms
+                )
+            
+            out_wavs.append(sentence_wav)
+            
         except Exception as e:
-            logger.error(f"Error processing text: {sentence} - {e}")            
-    return np.concatenate(out_wavs), num_of_tokens
+            logger.error(f"Error processing text: {sentence} - {e}")
+    
+    # Concatenate all sentences
+    if out_wavs:
+        final_wav = np.concatenate(out_wavs)
+    else:
+        # Return empty array if no audio was generated
+        final_wav = np.array([])
+    
+    return final_wav, num_of_tokens
 
 
 async def handle_speech_request(request):

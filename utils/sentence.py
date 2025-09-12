@@ -57,23 +57,117 @@ def split_sentence(sentence, max_text_length=180, delimiters=",;-!?"):
         + split_sentence(second_half, max_text_length=max_text_length)
 
 
-def merge_sentences(sentences):
-    """ handling short sentences by merging them to next/prev ones """
-    merged_sentences = []
+def merge_sentences(sentences, min_words=12, max_chars=250):
+    """
+    Merge sentences to ensure each has at least min_words words while staying under max_chars.
+    
+    Strategy:
+    1. Forward pass: merge short sentences with following sentences
+    2. Backward pass: merge any remaining short sentences with previous ones
+    3. Respect character limit to avoid overly long sentences
+    
+    Args:
+        sentences: List of sentence strings
+        min_words: Minimum number of words per sentence (default: 6)
+        max_chars: Maximum characters per sentence (default: 250)
+    
+    Returns:
+        List of merged sentences with at least min_words each and under max_chars
+    """
+    if not sentences:
+        return []
+    
+    if len(sentences) == 1:
+        return sentences[:]
+    
+    def word_count(sentence):
+        return len(sentence.split())
+    
+    # Forward pass: merge short sentences with next ones
+    merged = []
     i = 0
-    while i < len(sentences): 
-        s = sentences[i]
-        word_count = len(s.split())
-        j = 1
-        # merge the short sentence to the next one until long enough
-        while word_count <= 6 and i+j < len(sentences):
-            s += ' ' + sentences[i+j]
-            word_count = len(s.split())
+    
+    while i < len(sentences):
+        current = sentences[i]
+        j = i + 1
+        
+        # Keep merging with following sentences until we reach min_words or hit char limit
+        while word_count(current) < min_words and j < len(sentences):
+            next_merge = current + ' ' + sentences[j]
+            if len(next_merge) > max_chars:
+                break  # Would exceed character limit, stop merging
+            current = next_merge
             j += 1
-        merged_sentences.append(s)
-        i += j
-    # merge the last one to the prev one until long enough
-    while len(merged_sentences) > 1 and len(merged_sentences[len(merged_sentences) - 1].split()) < 6:
-        merged_sentences[len(merged_sentences) - 2] += ' ' + merged_sentences[len(merged_sentences) - 1]
-        merged_sentences.pop()
-    return merged_sentences
+        
+        merged.append(current)
+        i = j
+    
+    # Backward pass: handle any remaining short sentences at the end
+    while len(merged) > 1 and word_count(merged[-1]) < min_words:
+        # Check if merging would exceed character limit
+        potential_merge = merged[-2] + ' ' + merged[-1]
+        if len(potential_merge) > max_chars:
+            break  # Can't merge without exceeding limit, keep as is
+        merged[-2] = potential_merge
+        merged.pop()
+    
+    return merged
+
+
+def merge_sentences_balanced(sentences, min_words=12, max_chars=250):
+    """
+    More balanced merging that considers both forward and backward options.
+    
+    This version tries to create more evenly sized sentences by choosing
+    whether to merge forward or backward based on sentence lengths, while
+    respecting the character limit.
+    """
+    if not sentences:
+        return []
+    
+    if len(sentences) == 1:
+        return sentences[:]
+    
+    def word_count(sentence):
+        return len(sentence.split())
+    
+    merged = sentences[:]
+    changed = True
+    
+    while changed:
+        changed = False
+        i = 0
+        
+        while i < len(merged):
+            if word_count(merged[i]) < min_words:
+                if i < len(merged) - 1:  # Can merge forward
+                    forward_merge = merged[i] + ' ' + merged[i + 1]
+                    backward_merge = merged[i - 1] + ' ' + merged[i] if i > 0 else None
+                    
+                    # Choose merge direction based on character limits and preference
+                    if len(forward_merge) <= max_chars and (
+                        i == 0 or 
+                        backward_merge is None or 
+                        len(backward_merge) > max_chars or
+                        word_count(merged[i + 1]) <= word_count(merged[i - 1])
+                    ):
+                        # Merge forward
+                        merged[i] = forward_merge
+                        merged.pop(i + 1)
+                        changed = True
+                    elif i > 0 and backward_merge and len(backward_merge) <= max_chars:
+                        # Merge backward
+                        merged[i - 1] = backward_merge
+                        merged.pop(i)
+                        changed = True
+                        i -= 1
+                elif i > 0:  # Can only merge backward
+                    backward_merge = merged[i - 1] + ' ' + merged[i]
+                    if len(backward_merge) <= max_chars:
+                        merged[i - 1] = backward_merge
+                        merged.pop(i)
+                        changed = True
+                        i -= 1
+            i += 1
+    
+    return merged

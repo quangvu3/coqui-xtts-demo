@@ -266,9 +266,12 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
 
 
 def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, sentence_silence_ms=0):
-    language_code = lang_detect(input_text) if language == 'Auto' else language_dict.get(language, 'en')
+    # If a language is specified, use it, otherwise detect it.
+    # This is used for sentence splitting.
+    lang_for_split = language_dict.get(language, 'en') if language != 'Auto' else lang_detect(input_text)
+
     # Split text by sentence
-    if language_code in ["ja", "zh-cn"]:
+    if lang_for_split in ["ja", "zh-cn"]:
         sentences = input_text.split("。")
     else:
         sentences = sent_tokenize(input_text)
@@ -289,18 +292,22 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
     for i, sentence in enumerate(sentences):
         if len(sentence.strip()) == 0:
             continue
-        lang = lang_detect(sentence) if language == 'Auto' else language_code
-        if lang == 'vi':
+        
+        # If a language is specified, use it, otherwise detect from the sentence.
+        # This is used for inference.
+        lang_for_inference = language_dict.get(language, 'en') if language != 'Auto' else lang_detect(sentence)
+
+        if lang_for_inference == 'vi':
             sentence = normalize_vietnamese_text(sentence)
-        text_tokens = torch.IntTensor(xtts_model.tokenizer.encode(sentence, lang=lang)).unsqueeze(0).to(xtts_model.device)
+        text_tokens = torch.IntTensor(xtts_model.tokenizer.encode(sentence, lang=lang_for_inference)).unsqueeze(0).to(xtts_model.device)
         num_of_tokens += text_tokens.shape[-1]
         txts = split_sentence(sentence, max_text_length=max_text_length)
         for txt in txts:
-            logger.info(f"[{lang}] {txt}")
+            logger.info(f"[{lang_for_inference}] {txt}")
             try:
                 out = xtts_model.inference(
                     text=txt,
-                    language=lang,
+                    language=lang_for_inference,
                     gpt_cond_latent=gpt_cond_latent,
                     speaker_embedding=speaker_embedding,
                     temperature=temperature,

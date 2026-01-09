@@ -291,6 +291,8 @@ async def handle_speech_request(request):
         # Validate the request's content
         request_data = await request.json()
         text_to_speak = request_data.get('text')
+        language = request_data.get('language', 'Auto')
+
 
         if not text_to_speak:
             return web.json_response({"error": "Missing or empty 'text' field"}, status=400)
@@ -322,7 +324,7 @@ async def handle_speech_request(request):
                 # Multi-speaker synthesis
                 wav_array, _ = multi_speaker_engine.synthesize_segments(
                     segments,
-                    language='Auto',
+                    language=language,
                     temperature=0.2,
                     top_p=0.85,
                     top_k=70,
@@ -351,7 +353,7 @@ async def handle_speech_request(request):
                 )
 
             # Use existing synthesize_speech function
-            sample_rate, wav_array = synthesize_speech(text_to_speak, speaker_id=speaker_id)
+            sample_rate, wav_array = synthesize_speech(text_to_speak, speaker_id=speaker_id, language=language)
 
         # Save and return audio (common for both modes)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:

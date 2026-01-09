@@ -21,6 +21,12 @@ from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences
 
+# Import multi-speaker support modules
+from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
+from xtts_oai_server.speaker_registry import UnifiedSpeakerRegistry
+from xtts_oai_server.text_parser import TextParser
+from xtts_oai_server.multi_speaker_inference import MultiSpeakerInference
+
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -100,6 +106,33 @@ def download_unidic():
 
 download_unidic()
 
+# Initialize multi-speaker support
+logger.info("Initializing multi-speaker support...")
+
+custom_speakers_dir = f"{APP_DIR}/speakers"
+custom_cache_dir = f"{APP_DIR}/cache/speakers/custom"
+os.makedirs(custom_cache_dir, exist_ok=True)
+
+custom_speaker_manager = CustomSpeakerManager(
+    xtts_model=xtts_model,
+    speakers_dir=custom_speakers_dir,
+    cache_dir=custom_cache_dir
+)
+custom_speaker_manager.scan_and_load_speakers()
+
+speaker_registry = UnifiedSpeakerRegistry(
+    xtts_model=xtts_model,
+    custom_speaker_manager=custom_speaker_manager
+)
+speaker_registry.build_registry()
+
+text_parser = TextParser(speaker_registry)
+
+# MultiSpeakerInference will be initialized after inference() function is defined
+multi_speaker_engine = None
+
+logger.info(f"Multi-speaker support initialized with {len(speaker_registry.list_all_speakers())} speakers")
+
 default_speaker_reference_audio = os.path.join(sample_audio_dir, 'harvard.wav')
 default_speaker_id = "Aaron Dreschner"
 
@@ -130,16 +163,41 @@ def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k
 
     start = time.time()
     logger.info(f"Start processing text: {input_text[:30]}... [length: {len(input_text)}]")
-    # inference
-    wav_array, num_of_tokens = inference(input_text=input_text, 
-                          language=language,
-                          speaker_id=speaker_id, 
-                          gpt_cond_latent=None, 
-                          speaker_embedding=None, 
-                          temperature=temperature, 
-                          top_p=top_p, 
-                          top_k=top_k, 
-                          repetition_penalty=float(repetition_penalty))
+
+    # Check if Auto mode with tags
+    if speaker_id == "Auto" and text_parser.has_tags(input_text):
+        # Multi-speaker mode
+        logger.info("Using multi-speaker mode (Auto + tags detected)")
+        try:
+            segments = text_parser.parse_text(input_text)
+            text_parser.validate_speakers(segments)
+
+            wav_array, num_of_tokens = multi_speaker_engine.synthesize_segments(
+                segments,
+                language=language,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                sentence_silence_ms=0  # Gradio doesn't add auto-silence between sentences
+            )
+        except ValueError as e:
+            gr.Warning(f"Multi-speaker error: {e}")
+            log_messages += f"Error: {e}"
+            return None, log_messages
+    else:
+        # Single-speaker mode (existing logic)
+        logger.info("Using single-speaker mode")
+        wav_array, num_of_tokens = inference(input_text=input_text,
+                              language=language,
+                              speaker_id=speaker_id if speaker_id != "Auto" else default_speaker_id,
+                              gpt_cond_latent=None,
+                              speaker_embedding=None,
+                              temperature=temperature,
+                              top_p=top_p,
+                              top_k=top_k,
+                              repetition_penalty=float(repetition_penalty))
+
     end = time.time()
     processing_time = end - start
     tokens_per_second = num_of_tokens/processing_time
@@ -207,7 +265,7 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
     return (24000, wav_array), log_messages
 
 
-def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0):
+def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, sentence_silence_ms=0):
     language_code = lang_detect(input_text) if language == 'Auto' else language_dict.get(language, 'en')
     # Split text by sentence
     if language_code in ["ja", "zh-cn"]:
@@ -222,12 +280,13 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
     dynamic_length_penalty = lambda text_length: (2 * (min(max_text_length, text_length) / max_text_length)) - 1
 
     if speaker_id is not None:
-        gpt_cond_latent, speaker_embedding = xtts_model.speaker_manager.speakers[speaker_id].values()
+        # Use speaker_registry to support both built-in and custom speakers
+        gpt_cond_latent, speaker_embedding = speaker_registry.get_speaker(speaker_id)
 
     # inference
     out_wavs = []
     num_of_tokens = 0
-    for sentence in sentences:
+    for i, sentence in enumerate(sentences):
         if len(sentence.strip()) == 0:
             continue
         lang = lang_detect(sentence) if language == 'Auto' else language_code
@@ -254,8 +313,23 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                 out_wavs.append(out["wav"])
             except Exception as e:
                 logger.error(f"Error processing text: {e}")
+        
+        # Add silence after each sentence (except the last one)
+        if sentence_silence_ms > 0 and i < len(sentences) - 1:
+            silence_samples = int((sentence_silence_ms / 1000.0) * 24000)
+            silence = np.zeros(silence_samples, dtype=np.float32)
+            out_wavs.append(silence)
+
     return np.concatenate(out_wavs), num_of_tokens
 
+
+#  Initialize multi-speaker engine now that inference function is defined
+multi_speaker_engine = MultiSpeakerInference(
+    xtts_model=xtts_model,
+    speaker_registry=speaker_registry,
+    inference_fn=inference
+)
+logger.info("Multi-speaker inference engine initialized")
 
 def build_gradio_ui():
     """Builds and launches the Gradio UI."""
@@ -267,6 +341,14 @@ def build_gradio_ui():
                       "Привет, я многоязычная модель искусственного интеллекта, преобразующая текст в речь.\n"
                       "Xin chào, tôi là một mô hình AI chuyển đổi văn bản thành giọng nói đa ngôn ngữ.\n")
         
+    
+    def update_help_text(speaker):
+        """Update helper text visibility based on speaker selection."""
+        if speaker == "Auto":
+            return gr.update(visible=True, value="**Auto mode enabled**: Use tags like `[speaker_id] text` and `[silence 2s]` in your text. Example: `[main_storyteller_1] Once upon a time... [silence 1s] [normal_young_man_1] Hello!`")
+        else:
+            return gr.update(visible=False)
+
     with gr.Blocks(title="Coqui XTTS Demo", theme='jimmyvu/small_and_pretty') as ui:
         gr.Markdown(
           """
@@ -285,12 +367,16 @@ def build_gradio_ui():
                                      lines=5, 
                                      max_length=input_text_max_length)
                 
-                speaker_id = gr.Dropdown(label="Speaker", choices=[k for k in xtts_model.speaker_manager.speakers.keys()], value=default_speaker_id)
+                speaker_id = gr.Dropdown(label="Speaker", choices=["Auto"] + [s["id"] for s in speaker_registry.list_all_speakers()], value=default_speaker_id)
+                help_text = gr.Markdown(visible=False)
                 language = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value=default_language)
                 synthesize_button = gr.Button("Generate Speech")
             with gr.Column():
                 audio_output = gr.Audio(label="Generated Audio")
                 log_output = gr.Text(label="Log Output")
+
+        # Connect speaker dropdown to help text
+        speaker_id.change(update_help_text, inputs=[speaker_id], outputs=[help_text])
 
 
         with gr.Tab("Reference Voice"):

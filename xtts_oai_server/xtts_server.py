@@ -26,6 +26,12 @@ from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences, merge_sentences_balanced
 
+# Import multi-speaker support modules
+from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
+from xtts_oai_server.speaker_registry import UnifiedSpeakerRegistry
+from xtts_oai_server.text_parser import TextParser
+from xtts_oai_server.multi_speaker_inference import MultiSpeakerInference
+
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -95,6 +101,33 @@ def download_unidic():
         subprocess.call([sys.executable, "-m", "unidic", "download"])
 
 download_unidic()
+
+# Initialize multi-speaker support
+logger.info("Initializing multi-speaker support...")
+
+custom_speakers_dir = f"{APP_DIR}/speakers"
+custom_cache_dir = f"{APP_DIR}/cache/speakers/custom"
+os.makedirs(custom_cache_dir, exist_ok=True)
+
+custom_speaker_manager = CustomSpeakerManager(
+    xtts_model=xtts_model,
+    speakers_dir=custom_speakers_dir,
+    cache_dir=custom_cache_dir
+)
+custom_speaker_manager.scan_and_load_speakers()
+
+speaker_registry = UnifiedSpeakerRegistry(
+    xtts_model=xtts_model,
+    custom_speaker_manager=custom_speaker_manager
+)
+speaker_registry.build_registry()
+
+text_parser = TextParser(speaker_registry)
+
+# We'll initialize multi_speaker_engine after defining the inference function
+multi_speaker_engine = None
+
+logger.info(f"Multi-speaker support initialized with {len(speaker_registry.list_all_speakers())} speakers")
 
 default_speaker_id = "Aaron Dreschner"
 
@@ -185,7 +218,8 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
     dynamic_length_penalty = lambda text_length: (2 * (min(max_text_length, text_length) / max_text_length)) - 1
 
     if speaker_id is not None:
-        gpt_cond_latent, speaker_embedding = xtts_model.speaker_manager.speakers[speaker_id].values()
+        # Use speaker_registry to support both built-in and custom speakers
+        gpt_cond_latent, speaker_embedding = speaker_registry.get_speaker(speaker_id)
 
     # inference
     out_wavs = []
@@ -242,31 +276,91 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
     return final_wav, num_of_tokens
 
 
+# Initialize multi-speaker engine now that inference function is defined
+multi_speaker_engine = MultiSpeakerInference(
+    xtts_model=xtts_model,
+    speaker_registry=speaker_registry,
+    inference_fn=inference
+)
+logger.info("Multi-speaker inference engine initialized")
+
+
 async def handle_speech_request(request):
-    """Handles the /v1/audio/speech endpoint, generating audio from text."""
+    """Handles the /v1/audio/speech endpoint with multi-speaker support."""
     try:
-        # Important: Validate the request's content
+        # Validate the request's content
         request_data = await request.json()
         text_to_speak = request_data.get('text')
-        
+
         if not text_to_speak:
             return web.json_response({"error": "Missing or empty 'text' field"}, status=400)
 
-        speaker_id = request_data.get('speaker', default_speaker_id)
+        # Check for embedded speaker tags
+        has_tags = text_parser.has_tags(text_to_speak)
 
-        # Initialize the text-to-speech engine.
-        if speaker_id not in xtts_model.speaker_manager.speakers:
-            return web.json_response({"Error": f"Invalid speaker: [{speaker_id}]"}, status=400)
-        
-        sample_rate, wav_array = synthesize_speech(text_to_speak, speaker_id=speaker_id)
+        if has_tags:
+            # Auto mode: parse tags and use multi-speaker synthesis
+            try:
+                logger.info("Using multi-speaker mode (tags detected)")
 
+                # Get default speaker for segments without tags
+                default_speaker = request_data.get('speaker', None)
+
+                # Parse text into segments
+                segments = text_parser.parse_text(text_to_speak, default_speaker=default_speaker)
+
+                # Validate all speakers exist
+                text_parser.validate_speakers(segments)
+
+                # Log segment info
+                stats = text_parser.segment_stats(segments)
+                logger.info(f"Parsed {stats['total_segments']} segments: "
+                           f"{stats['speech_segments']} speech, "
+                           f"{stats['silence_segments']} silence, "
+                           f"{stats['unique_speakers']} unique speakers")
+
+                # Multi-speaker synthesis
+                wav_array, _ = multi_speaker_engine.synthesize_segments(
+                    segments,
+                    language='Auto',
+                    temperature=0.2,
+                    top_p=0.85,
+                    top_k=70,
+                    repetition_penalty=9.0,
+                    sentence_silence_ms=500
+                )
+
+                sample_rate = xtts_model.config.audio.sample_rate
+
+            except ValueError as e:
+                # Speaker validation or parsing error
+                logger.error(f"Multi-speaker error: {e}")
+                return web.json_response({"error": str(e)}, status=400)
+
+        else:
+            # Single speaker mode (backward compatible)
+            logger.info("Using single-speaker mode")
+
+            speaker_id = request_data.get('speaker', default_speaker_id)
+
+            # Check if speaker exists in registry
+            if not speaker_registry.speaker_exists(speaker_id):
+                return web.json_response(
+                    {"error": f"Invalid speaker: [{speaker_id}]"},
+                    status=400
+                )
+
+            # Use existing synthesize_speech function
+            sample_rate, wav_array = synthesize_speech(text_to_speak, speaker_id=speaker_id)
+
+        # Save and return audio (common for both modes)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
             tmp_file_path = tmp_file.name
             torchaudio.save(tmp_file_path, torch.tensor(wav_array).unsqueeze(0), sample_rate)
 
-            # Crucial: Check if audio file was created.
+            # Check if audio file was created
             if not os.path.exists(tmp_file_path):
-                return web.json_response({"Error": "Failed to generate audio"}, status=500)
+                return web.json_response({"error": "Failed to generate audio"}, status=500)
 
             # Prepare the response
             response = web.FileResponse(
@@ -275,14 +369,45 @@ async def handle_speech_request(request):
             )
 
             return response
+
     except Exception as e:
-        print(e)
+        logger.error(f"Error in handle_speech_request: {e}", exc_info=True)
         return web.json_response({"error": f"An error occurred: {str(e)}"}, status=500)
+
+
+async def handle_speakers_list(request):
+    """Handle GET /v1/speakers endpoint to list all available speakers."""
+    try:
+        speakers = speaker_registry.list_all_speakers()
+
+        # Format response
+        response_data = {
+            'speakers': [
+                {
+                    'id': s['id'],
+                    'source': s['source'],
+                    'cached': s.get('cached', True)
+                }
+                for s in speakers
+            ],
+            'total': len(speakers)
+        }
+
+        # Add speaker count by source
+        counts = speaker_registry.get_speaker_count()
+        response_data['counts'] = counts
+
+        return web.json_response(response_data)
+
+    except Exception as e:
+        logger.error(f"Error listing speakers: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def main():
     app = web.Application()
     app.router.add_post('/v1/audio/speech', handle_speech_request)
+    app.router.add_get('/v1/speakers', handle_speakers_list)
 
     runner = web.AppRunner(app)
     await runner.setup()

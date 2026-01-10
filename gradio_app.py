@@ -75,19 +75,22 @@ def load_model():
 
     from TTS.tts.configs.xtts_config import XttsConfig
     from TTS.tts.models.xtts import Xtts
-    
-    repo_id = "jimmyvu/xtts"
-    snapshot_download(repo_id=repo_id, 
-                      local_dir=checkpoint_dir, 
-                      allow_patterns=["*.safetensors", "*.wav", "*.json"], 
-                      ignore_patterns="*.pth")
+
+    model_safetensors_path = os.path.join(checkpoint_dir, "model.safetensors")
+    model_legacy_path = os.path.join(checkpoint_dir, "model.pth")
+    if not os.path.exists(model_safetensors_path) and not os.path.exists(model_legacy_path):
+        repo_id = "jimmyvu/xtts"
+        snapshot_download(repo_id=repo_id, 
+                        local_dir=checkpoint_dir, 
+                        allow_patterns=["*.safetensors", "*.wav", "*.json"], 
+                        ignore_patterns="*.pth")
 
     config = XttsConfig()
     config.load_json(os.path.join(checkpoint_dir, "config.json"))
     xtts_model = Xtts.init_from_config(config)
 
     logger.info("Loading model...")
-    xtts_model.load_safetensors_checkpoint(
+    xtts_model.load_checkpoint(
         config, checkpoint_dir=checkpoint_dir, use_deepspeed=use_deepspeed
     )
     if torch.cuda.is_available():
@@ -179,7 +182,7 @@ def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k
                 top_p=top_p,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
-                sentence_silence_ms=0  # Gradio doesn't add auto-silence between sentences
+                sentence_silence_ms=500  # Add 0.5s silence between sentences
             )
         except ValueError as e:
             gr.Warning(f"Multi-speaker error: {e}")
@@ -265,7 +268,7 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
     return (24000, wav_array), log_messages
 
 
-def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, sentence_silence_ms=0):
+def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, sentence_silence_ms=500):
     # If a language is specified, use it, otherwise detect it.
     # This is used for sentence splitting.
     lang_for_split = language_dict.get(language, 'en') if language != 'Auto' else lang_detect(input_text)

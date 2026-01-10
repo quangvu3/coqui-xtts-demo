@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a Coqui XTTS (Text-to-Speech) demo application supporting 17 languages with Vietnamese newly added. The project provides two interfaces:
 - **Gradio web UI** (`gradio_app.py`) - Interactive web interface with three modes: Built-in Voice, Reference Voice, and Clone Your Voice
-- **OpenAI-compatible API server** (`xtts_oai_server/xtts_server.py`) - aiohttp-based server exposing `/v1/audio/speech` endpoint
+- **OpenAI-compatible API server** (`xtts_oai_server/xtts_server.py`) - aiohttp-based server exposing `/v1/audio/speech` and `/v1/speakers` endpoints
 
-Both interfaces use the same underlying XTTS model from HuggingFace (`jimmyvu/xtts`) with support for voice cloning, audio enhancement, and multilingual synthesis.
+Both interfaces use the same underlying XTTS model from HuggingFace (`jimmyvu/xtts`) with support for voice cloning, audio enhancement, and multilingual synthesis. The API server additionally supports **multi-speaker synthesis** with embedded speaker tags and custom speaker loading from audio files.
 
 ## Running the Application
 
@@ -94,8 +94,14 @@ cache/                      # Model cache (gitignored)
 ├── temp/                  # Temporary audio files
 └── speakers/              # Speaker embeddings
 
+speakers/                  # Custom speaker audio files (.wav, .mp3, .flac, .ogg)
+
 xtts_oai_server/           # OpenAI-compatible API server
-└── xtts_server.py         # aiohttp server implementation
+├── xtts_server.py         # Main aiohttp server implementation
+├── custom_speaker_manager.py  # Custom speaker loading and caching
+├── speaker_registry.py    # Unified registry for built-in and custom speakers
+├── text_parser.py         # Parser for speaker/silence tags
+└── multi_speaker_inference.py  # Multi-speaker synthesis engine
 
 utils/                     # Shared utilities
 ├── vietnamese_normalization.py
@@ -113,21 +119,63 @@ utils/                     # Shared utilities
 - Three synthesis modes: Built-in Voice, Reference Voice, Clone Your Voice
 - Optional DeepFilterNet enhancement for reference audio
 - Text splitting disabled in inference (`enable_text_splitting=False`) - uses custom `split_sentence()` instead
-- No silence padding between sentences
+- Adds 500ms silence between sentences (same as API server)
 
 **API Server (`xtts_oai_server/xtts_server.py`)**:
 - No `@spaces` decorator (standalone deployment)
-- Only supports built-in speaker mode via `speaker` parameter
+- Supports both single-speaker and multi-speaker modes
 - Text splitting enabled in inference (`enable_text_splitting=True`)
 - Adds 500ms silence between sentences via `sentence_silence_ms` parameter
 - Uses `merge_sentences_balanced()` instead of `merge_sentences()`
 - Implements `calculate_keep_len()` hack for short sentences to trim audio
+- Loads custom speakers from `./speakers/` directory at startup
+- Caches speaker embeddings as `.safetensors` in `cache/speakers/custom/`
 
 ### Language Support
 
 Supported languages: English, Spanish, French, German, Italian, Portuguese, Polish, Turkish, Russian, Dutch, Czech, Arabic, Chinese, Hungarian, Korean, Japanese, Vietnamese
 
 Auto-detection: Set `language='Auto'` to use `langdetect` for automatic language detection.
+
+### Multi-Speaker Architecture (API Server Only)
+
+The API server supports advanced multi-speaker synthesis with four key components:
+
+**`CustomSpeakerManager`** (`xtts_oai_server/custom_speaker_manager.py`):
+- Scans `./speakers/` directory for audio files (.wav, .mp3, .flac, .ogg)
+- Processes audio files into embeddings using `xtts_model.get_conditioning_latents()`
+- Caches embeddings as `.safetensors` files in `cache/speakers/custom/`
+- First startup: 2-5 seconds per speaker to process
+- Subsequent startups: <1 second (loads from cache)
+- Cache invalidation: Automatically detects source file modifications
+
+**`UnifiedSpeakerRegistry`** (`xtts_oai_server/speaker_registry.py`):
+- Merges 101 built-in speakers with custom speakers into single registry
+- Provides unified interface for speaker lookup across all sources
+- Custom speakers can override built-in speakers if same ID
+- Exposes `get_speaker()`, `list_all_speakers()`, `get_speaker_count()` methods
+
+**`TextParser`** (`xtts_oai_server/text_parser.py`):
+- Parses embedded tags in text: `[speaker_id]` for speaker switching, `[silence 2s]` for silence
+- Validates speaker IDs against registry
+- Generates list of segments: `{type: 'speech', speaker_id: str, text: str}` or `{type: 'silence', duration: float}`
+- Example: `"[narrator] Once upon a time [silence 1s] [hero] Hello!"` → 3 segments
+
+**`MultiSpeakerInference`** (`xtts_oai_server/multi_speaker_inference.py`):
+- Orchestrates synthesis across multiple speakers
+- Automatically adds 1 second silence between different speakers
+- Calls inference function for each speech segment with appropriate speaker embeddings
+- Generates silence arrays for explicit silence tags
+- Concatenates all audio segments into final output
+
+**API Endpoints**:
+- `POST /v1/audio/speech`: Single-speaker mode (backward compatible) or multi-speaker with tags
+- `GET /v1/speakers`: Lists all available speakers with metadata (source, cached status)
+
+**Tag Format**:
+- Speaker: `[speaker_id]` - switches to specified speaker for subsequent text
+- Silence: `[silence 1.5s]` - inserts N seconds of silence (supports decimals)
+- Note: 1 second of silence is automatically inserted between different speakers
 
 ### Generation Parameters
 
@@ -160,3 +208,34 @@ Audio enhancement is only implemented in Gradio UI via DeepFilterNet. See `gener
 Modify parameters in `merge_sentences()` or `merge_sentences_balanced()`:
 - `min_words`: Minimum words per sentence (default 12)
 - `max_chars`: Maximum characters per sentence (default 250)
+
+### Adding custom speakers (API Server)
+1. Place audio files in `./speakers/` directory (supported formats: .wav, .mp3, .flac, .ogg)
+2. Filename becomes speaker ID (e.g., `hero_voice.wav` → speaker ID: `hero_voice`)
+3. Audio requirements: 3-30 seconds, clear speech, minimal background noise
+4. Restart server to process new speakers
+5. Verify with: `curl http://localhost:8088/v1/speakers`
+
+### Testing multi-speaker synthesis
+```bash
+# Single speaker (backward compatible)
+curl -X POST 'http://localhost:8088/v1/audio/speech' \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Hello world", "speaker": "Aaron Dreschner"}' \
+  --output output.wav
+
+# Multi-speaker with tags
+curl -X POST 'http://localhost:8088/v1/audio/speech' \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "[narrator] Once upon a time [silence 1s] [hero] Hello!"}' \
+  --output multi.wav
+```
+
+## Additional Documentation
+
+See `MULTI_SPEAKER_GUIDE.md` for comprehensive multi-speaker API documentation including:
+- Detailed API endpoint specifications
+- Complete tag syntax and examples
+- Python client examples
+- Performance notes and troubleshooting
+- List of available custom speakers

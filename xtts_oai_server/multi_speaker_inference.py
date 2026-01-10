@@ -34,6 +34,7 @@ class MultiSpeakerInference:
     ):
         """
         Synthesize audio from parsed segments with multiple speakers.
+        Automatically adds 1 second of silence between different speakers.
 
         Args:
             segments: List of parsed segments from TextParser
@@ -49,6 +50,7 @@ class MultiSpeakerInference:
         """
         out_wavs = []
         total_tokens = 0
+        previous_speaker = None
 
         logger.info(f"Synthesizing {len(segments)} segments")
 
@@ -64,6 +66,12 @@ class MultiSpeakerInference:
                 # Get speaker embeddings
                 speaker_id = segment['speaker_id']
                 text = segment['text']
+
+                # Add 1 second silence between different speakers
+                if previous_speaker is not None and previous_speaker != speaker_id:
+                    logger.info(f"Speaker change detected: [{previous_speaker}] -> [{speaker_id}], adding 1s silence")
+                    silence_wav = self._generate_silence(1.0)
+                    out_wavs.append(silence_wav)
 
                 logger.info(f"Segment {i+1}: Speaker [{speaker_id}] - {text[:50]}...")
 
@@ -91,6 +99,7 @@ class MultiSpeakerInference:
 
                     out_wavs.append(wav)
                     total_tokens += tokens
+                    previous_speaker = speaker_id  # Update previous speaker
 
                 except Exception as e:
                     logger.error(f"Error synthesizing segment {i+1}: {e}")

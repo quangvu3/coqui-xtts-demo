@@ -184,7 +184,13 @@ Key parameters for controlling synthesis quality:
 - `top_p` (0.5-1.0, default 0.85): Nucleus sampling threshold
 - `top_k` (0-100, default 50 Gradio / 70 API): Top-k sampling
 - `repetition_penalty` (1.0-50.0, default 10.0 Gradio / 9.0 API): Prevents repetition
-- `length_penalty`: Dynamically calculated based on text length
+- `length_penalty`: Dynamically calculated using quadratic formula for aggressive short sentence bias
+  - Formula: `2 * ((min(text_length, 180) / 180)^2) - 1`
+  - Range: -1.0 (very short) to 1.0 (180+ chars)
+  - Behavior: Stays close to -1.0 for short text (prevents over-generation), accelerates upward for longer text
+  - Shared utility: `utils/length_penalty.py`
+  - Gradio: Calculated per fragment after manual splitting
+  - API: Calculated per merged sentence (XTTS model splits internally)
 
 ### Model and Data Paths
 

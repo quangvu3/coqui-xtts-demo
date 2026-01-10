@@ -20,6 +20,7 @@ from langdetect import detect
 from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences
+from utils.length_penalty import calculate_length_penalty
 
 # Import multi-speaker support modules
 from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
@@ -280,10 +281,9 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
         sentences = sent_tokenize(input_text)
     # merge short sentences to next/prev ones
     sentences = merge_sentences(sentences)
-    
-    # set dynamic length penalty from -1.0 to 1,0 based on text length
+
+    # max_text_length is used for split_sentence() only
     max_text_length = 180
-    dynamic_length_penalty = lambda text_length: (2 * (min(max_text_length, text_length) / max_text_length)) - 1
 
     if speaker_id is not None:
         # Use speaker_registry to support both built-in and custom speakers
@@ -316,8 +316,8 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     temperature=temperature,
                     top_p=top_p,
                     top_k=top_k,
-                    repetition_penalty=repetition_penalty,
-                    length_penalty=dynamic_length_penalty(len(sentence)),
+                    repetition_penalty=repetition_penalty*1.0,
+                    length_penalty=calculate_length_penalty(len(txt)),
                     enable_text_splitting=False,
                 )
                 out_wavs.append(out["wav"])

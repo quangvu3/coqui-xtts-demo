@@ -21,6 +21,7 @@ from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences
 from utils.length_penalty import calculate_length_penalty
+from utils.audio_trimmer import trim_audio, TrimConfig
 
 # Import multi-speaker support modules
 from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
@@ -64,6 +65,9 @@ def lang_detect(text):
 
 input_text_max_length = 3000
 use_deepspeed = False
+
+# Initialize audio trimming configuration
+TRIM_CONFIG = TrimConfig()
 
 try:
     import spaces
@@ -320,7 +324,17 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     length_penalty=calculate_length_penalty(len(txt)),
                     enable_text_splitting=False,
                 )
-                out_wavs.append(out["wav"])
+
+                # Trim audio to remove excess silence and over-generation
+                trimmed_wav = trim_audio(
+                    audio_array=out["wav"],
+                    text=txt,
+                    language=lang_for_inference,
+                    sample_rate=24000,
+                    strategy='hybrid',
+                    config=TRIM_CONFIG
+                )
+                out_wavs.append(trimmed_wav)
             except Exception as e:
                 logger.error(f"Error processing text: {e}")
         

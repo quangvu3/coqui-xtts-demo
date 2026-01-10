@@ -26,6 +26,7 @@ from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences, merge_sentences_balanced
 from utils.length_penalty import calculate_length_penalty
+from utils.audio_trimmer import trim_audio, TrimConfig
 
 # Import multi-speaker support modules
 from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
@@ -67,6 +68,9 @@ def lang_detect(text):
 
 input_text_max_length = 3000
 use_deepspeed = False
+
+# Initialize audio trimming configuration
+TRIM_CONFIG = TrimConfig()
 
 xtts_model = None
 def load_model():
@@ -169,20 +173,6 @@ def add_silence_to_wav_array(wav_array, sample_rate=24000, silence_ms=1000):
     # Concatenate original audio with silence
     return np.concatenate([wav_array, silence])
 
-def calculate_keep_len(text, lang):
-    """Simple hack for short sentences"""
-    if lang in ["ja", "zh-cn"]:
-        return -1
-
-    word_count = len(text.split())
-    num_punct = text.count(".") + text.count("!") + text.count("?") + text.count(",")
-
-    if word_count < 5:
-        return 15000 * word_count + 2000 * num_punct
-    elif word_count < 10:
-        return 13000 * word_count + 2000 * num_punct
-    return -1
-    
 def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, 
               temperature=0.2, top_p=0.85, top_k=70, repetition_penalty=10.0, sentence_silence_ms=500):
     """
@@ -247,9 +237,17 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                 length_penalty=calculate_length_penalty(len(sentence)),
                 enable_text_splitting=True,
             )
-            
-            sentence_wav = out["wav"][:calculate_keep_len(sentence, lang)]
-            
+
+            # Trim audio to remove excess silence and over-generation
+            sentence_wav = trim_audio(
+                audio_array=out["wav"],
+                text=sentence,
+                language=lang,
+                sample_rate=xtts_model.config.audio.sample_rate,
+                strategy='hybrid',
+                config=TRIM_CONFIG
+            )
+
             # Add silence after each sentence (except the last one)
             if sentence_silence_ms > 0 and i < len(sentences) - 1:
                 sentence_wav = add_silence_to_wav_array(

@@ -78,18 +78,22 @@ def load_model():
     
     from TTS.tts.configs.xtts_config import XttsConfig
     from TTS.tts.models.xtts import Xtts
-    repo_id = "jimmyvu/xtts"
-    snapshot_download(repo_id=repo_id, 
-                      local_dir=checkpoint_dir, 
-                      allow_patterns=["*.safetensors", "*.wav", "*.json"], 
-                      ignore_patterns="*.pth")
+
+    model_safetensors_path = os.path.join(checkpoint_dir, "model.safetensors")
+    model_legacy_path = os.path.join(checkpoint_dir, "model.pth")
+    if not os.path.exists(model_safetensors_path) and not os.path.exists(model_legacy_path):
+        repo_id = "jimmyvu/xtts"
+        snapshot_download(repo_id=repo_id, 
+                        local_dir=checkpoint_dir, 
+                        allow_patterns=["*.safetensors", "*.wav", "*.json"], 
+                        ignore_patterns="*.pth")
 
     config = XttsConfig()
     config.load_json(os.path.join(checkpoint_dir, "config.json"))
     xtts_model = Xtts.init_from_config(config)
 
     logger.info("Loading model...")
-    xtts_model.load_safetensors_checkpoint(
+    xtts_model.load_checkpoint(
         config, checkpoint_dir=checkpoint_dir, use_deepspeed=use_deepspeed
     )
     if torch.cuda.is_available():

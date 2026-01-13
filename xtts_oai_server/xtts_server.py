@@ -140,7 +140,7 @@ logger.info(f"Multi-speaker support initialized with {len(speaker_registry.list_
 
 default_speaker_id = "Aaron Dreschner"
 
-def synthesize_speech(input_text, speaker_id, temperature=0.2, top_p=0.85, top_k=70, repetition_penalty=9.0, language='Auto'):
+def synthesize_speech(input_text, speaker_id, temperature=0.2, top_p=0.85, top_k=70, repetition_penalty=29.0, language='Auto'):
     """Process text and generate audio."""
     global xtts_model
     
@@ -178,7 +178,7 @@ def add_silence_to_wav_array(wav_array, sample_rate=24000, silence_ms=1000):
     return np.concatenate([wav_array, silence])
 
 def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, 
-              temperature=0.2, top_p=0.85, top_k=70, repetition_penalty=10.0, sentence_silence_ms=500):
+              temperature=0.2, top_p=0.85, top_k=70, repetition_penalty=29.0, sentence_silence_ms=500):
     """
     Generate speech from text with silence padding options.
     
@@ -248,7 +248,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                 text=sentence,
                 language=lang,
                 sample_rate=xtts_model.config.audio.sample_rate,
-                strategy='hybrid',
+                strategy='text_only',
                 config=TRIM_CONFIG
             )
 

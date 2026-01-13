@@ -28,7 +28,7 @@ class TrimConfig:
 
     # Text-based prediction parameters
     base_duration_per_char: float = 0.025  # 25ms per character (~40 chars/sec)
-    pause_per_punct: float = 0.1  # 100ms pause per punctuation mark
+    pause_per_punct: float = 0.5  # 500ms pause per punctuation mark
     text_safety_margin: float = 1.15  # 15% safety buffer on text prediction
     min_length_ratio: float = 0.85  # Never trim more than 15% below prediction
 
@@ -37,7 +37,7 @@ class TrimConfig:
         'ja': 1.3,      # Japanese: denser information per character
         'zh-cn': 1.3,   # Chinese: similar to Japanese
         'ko': 1.2,      # Korean: moderately dense
-        'vi': 2.7,      # Vietnamese: normal after normalization
+        'vi': 2.0,      # Vietnamese: normal after normalization
         'en': 1.0,      # English: baseline
         'es': 1.0,      # Spanish
         'fr': 1.0,      # French
@@ -192,7 +192,7 @@ def trim_audio(
     text: str,
     language: str,
     sample_rate: int = 24000,
-    strategy: str = 'hybrid',
+    strategy: str = 'text_only',
     config: Optional[TrimConfig] = None
 ) -> np.ndarray:
     """

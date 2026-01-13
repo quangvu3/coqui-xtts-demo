@@ -29,15 +29,16 @@ def calculate_length_penalty(
         float: Length penalty in range [-1.0, 1.0]
 
     Examples:
-        >>> calculate_length_penalty(10)   # Very short
-        -0.988
         >>> calculate_length_penalty(45)   # Short
-        -0.875
+        -1.0
         >>> calculate_length_penalty(90)   # Medium
         -0.500
         >>> calculate_length_penalty(180)  # Long
         1.0
     """
+    if text_length <= 45:
+        return -1.0
+    
     # Clamp text_length to max_length
     clamped_length = min(text_length, max_length)
 

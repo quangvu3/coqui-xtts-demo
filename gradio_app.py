@@ -273,7 +273,7 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
     return (24000, wav_array), log_messages
 
 
-def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, sentence_silence_ms=500):
+def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=29.0, sentence_silence_ms=500):
     # If a language is specified, use it, otherwise detect it.
     # This is used for sentence splitting.
     lang_for_split = language_dict.get(language, 'en') if language != 'Auto' else lang_detect(input_text)
@@ -331,7 +331,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     text=txt,
                     language=lang_for_inference,
                     sample_rate=24000,
-                    strategy='hybrid',
+                    strategy='text_only',
                     config=TRIM_CONFIG
                 )
                 out_wavs.append(trimmed_wav)
@@ -461,7 +461,7 @@ def build_gradio_ui():
             with gr.Row():
                 with gr.Column():
                     temperature = gr.Slider(label="Temperature", minimum=0.1, maximum=1.0, value=0.3, step=0.05)
-                    repetition_penalty = gr.Slider(label="Repetition penalty", minimum=1.0, maximum=50.0, value=9.5, step=1.0)
+                    repetition_penalty = gr.Slider(label="Repetition penalty", minimum=1.0, maximum=50.0, value=29.0, step=1.0)
                     
                 with gr.Column():
                     top_p = gr.Slider(label="Top P", minimum=0.5, maximum=1.0, value=0.85, step=0.05)

@@ -147,7 +147,7 @@ logger.info(f"Multi-speaker support initialized with {len(speaker_registry.list_
 
 default_speaker_id = "Aaron Dreschner"
 
-def synthesize_speech(input_text, speaker_id, temperature=0.2, top_p=0.85, top_k=70, repetition_penalty=29.0, language='Auto'):
+def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=29.0, language='Auto'):
     """Process text and generate audio."""
     global xtts_model
     
@@ -184,8 +184,8 @@ def add_silence_to_wav_array(wav_array, sample_rate=24000, silence_ms=1000):
     # Concatenate original audio with silence
     return np.concatenate([wav_array, silence])
 
-def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, 
-              temperature=0.2, top_p=0.85, top_k=70, repetition_penalty=29.0, sentence_silence_ms=500):
+def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None,
+              temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=29.0, sentence_silence_ms=500):
     """
     Generate speech from text with silence padding options.
     
@@ -219,59 +219,65 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
         # Use speaker_registry to support both built-in and custom speakers
         gpt_cond_latent, speaker_embedding = speaker_registry.get_speaker(speaker_id)
 
+    # max_text_length is used for split_sentence() only
+    max_text_length = 180
+
     # inference
     out_wavs = []
     num_of_tokens = 0
-    
+
     for i, sentence in enumerate(sentences):
         if len(sentence.strip()) == 0:
             continue
-            
+
         lang = lang_detect(sentence) if language == 'Auto' else language_code
         if lang == 'vi':
             sentence = normalize_vietnamese_text(sentence)
-            
-        text_tokens = torch.IntTensor(xtts_model.tokenizer.encode(sentence, lang=lang)).unsqueeze(0).to(xtts_model.device)
-        num_of_tokens += text_tokens.shape[-1]
-        logger.info(f"[{lang}] {sentence}")
-        
-        try:
-            out = xtts_model.inference(
-                text=sentence,
-                language=lang,
-                gpt_cond_latent=gpt_cond_latent,
-                speaker_embedding=speaker_embedding,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                length_penalty=calculate_length_penalty(len(sentence)),
-                enable_text_splitting=True,
-            )
 
-            # Trim audio to remove excess silence and over-generation
-            sentence_wav = trim_audio(
-                audio_array=out["wav"],
-                text=sentence,
-                language=lang,
-                sample_rate=xtts_model.config.audio.sample_rate,
-                strategy='text_only',
-                config=TRIM_CONFIG
-            )
+        # Split sentence if too long (matches Gradio app pattern)
+        txts = split_sentence(sentence, max_text_length=max_text_length)
+        for txt in txts:
+            text_tokens = torch.IntTensor(xtts_model.tokenizer.encode(txt, lang=lang)).unsqueeze(0).to(xtts_model.device)
+            num_of_tokens += text_tokens.shape[-1]
+            logger.info(f"[{lang}] {txt}")
 
-            # Add silence after each sentence (except the last one)
-            if sentence_silence_ms > 0 and i < len(sentences) - 1:
-                sentence_wav = add_silence_to_wav_array(
-                    sentence_wav, 
-                    sample_rate=xtts_model.config.audio.sample_rate, 
-                    silence_ms=sentence_silence_ms
+            try:
+                out = xtts_model.inference(
+                    text=txt,
+                    language=lang,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                    length_penalty=calculate_length_penalty(len(txt)),
+                    enable_text_splitting=False,
                 )
-            
-            out_wavs.append(sentence_wav)
-            
-        except Exception as e:
-            logger.error(f"Error processing text: {sentence} - {e}")
-    
+
+                # Trim audio to remove excess silence and over-generation
+                sentence_wav = trim_audio(
+                    audio_array=out["wav"],
+                    text=txt,
+                    language=lang,
+                    sample_rate=xtts_model.config.audio.sample_rate,
+                    strategy='text_only',
+                    config=TRIM_CONFIG
+                )
+
+                # Add silence after each sentence (except the last one)
+                if sentence_silence_ms > 0 and i < len(sentences) - 1:
+                    sentence_wav = add_silence_to_wav_array(
+                        sentence_wav,
+                        sample_rate=xtts_model.config.audio.sample_rate,
+                        silence_ms=sentence_silence_ms
+                    )
+
+                out_wavs.append(sentence_wav)
+
+            except Exception as e:
+                logger.error(f"Error processing text: {txt} - {e}")
+
     # Concatenate all sentences
     if out_wavs:
         final_wav = np.concatenate(out_wavs)
@@ -333,10 +339,10 @@ async def handle_speech_request(request):
                 wav_array, _ = multi_speaker_engine.synthesize_segments(
                     segments,
                     language=language,
-                    temperature=0.2,
+                    temperature=0.3,
                     top_p=0.85,
-                    top_k=70,
-                    repetition_penalty=9.0,
+                    top_k=50,
+                    repetition_penalty=29.0,
                     sentence_silence_ms=500
                 )
 

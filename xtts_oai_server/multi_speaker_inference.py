@@ -28,10 +28,10 @@ class MultiSpeakerInference:
         self,
         segments,
         language='Auto',
-        temperature=0.2,
+        temperature=0.3,
         top_p=0.85,
-        top_k=70,
-        repetition_penalty=9.0,
+        top_k=50,
+        repetition_penalty=29.0,
         sentence_silence_ms=500
     ):
         """

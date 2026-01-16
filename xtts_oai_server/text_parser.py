@@ -11,13 +11,18 @@ class TextParser:
     Supported formats:
     - Speaker tags: [speaker_id]
     - Silence tags: [silence 2s], [silence 0.5s]
+    - Soundtrack tags: [soundtrack 10s], [soundtrack 10s fadeout:3s]
 
     Example:
         [main_storyteller_1] Once upon a time... [silence 1s] [hero_voice] Hello!
+        [soundtrack 10s] [narrator] Once upon a time... [soundtrack 15s fadeout:3s] [hero] Hello!
     """
 
     # Regex pattern for silence tags: [silence 2s] or [silence 0.5s]
     SILENCE_TAG_PATTERN = r'\[silence\s+(\d+(?:\.\d+)?)\s*s\]'
+
+    # Regex pattern for soundtrack tags: [soundtrack 10s] or [soundtrack 10s fadeout:3s]
+    SOUNDTRACK_TAG_PATTERN = r'\[soundtrack(?:\s+(\d+(?:\.\d+)?)\s*s)?(?:\s+fadeout:(\d+(?:\.\d+)?)\s*s)?\]'
 
     # Regex pattern for any tag: [something]
     TAG_PATTERN = r'\[([^\]]+?)\]'
@@ -94,8 +99,20 @@ class TextParser:
                     'duration': duration
                 })
             else:
-                # It's a speaker tag
-                current_speaker = tag_content.strip()
+                # Check if it's a soundtrack tag
+                soundtrack_match = re.match(self.SOUNDTRACK_TAG_PATTERN, f'[{tag_content}]')
+                if soundtrack_match:
+                    # It's a soundtrack tag
+                    duration = float(soundtrack_match.group(1)) if soundtrack_match.group(1) else 10.0
+                    fadeout = float(soundtrack_match.group(2)) if soundtrack_match.group(2) else 5.0
+                    segments.append({
+                        'type': 'soundtrack',
+                        'duration': duration,
+                        'fadeout': fadeout
+                    })
+                else:
+                    # It's a speaker tag
+                    current_speaker = tag_content.strip()
 
             current_pos = tag_end
 
@@ -198,13 +215,17 @@ class TextParser:
         """
         speech_count = sum(1 for s in segments if s['type'] == 'speech')
         silence_count = sum(1 for s in segments if s['type'] == 'silence')
+        soundtrack_count = sum(1 for s in segments if s['type'] == 'soundtrack')
         total_silence_duration = sum(s['duration'] for s in segments if s['type'] == 'silence')
+        total_soundtrack_duration = sum(s['duration'] for s in segments if s['type'] == 'soundtrack')
         unique_speakers = len(self.get_unique_speakers(segments))
 
         return {
             'total_segments': len(segments),
             'speech_segments': speech_count,
             'silence_segments': silence_count,
+            'soundtrack_segments': soundtrack_count,
             'total_silence_duration': total_silence_duration,
+            'total_soundtrack_duration': total_soundtrack_duration,
             'unique_speakers': unique_speakers
         }

@@ -28,6 +28,7 @@ from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
 from xtts_oai_server.speaker_registry import UnifiedSpeakerRegistry
 from xtts_oai_server.text_parser import TextParser
 from xtts_oai_server.multi_speaker_inference import MultiSpeakerInference
+from xtts_oai_server.soundtrack_manager import SoundtrackManager
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -120,6 +121,12 @@ logger.info("Initializing multi-speaker support...")
 custom_speakers_dir = f"{APP_DIR}/speakers"
 custom_cache_dir = f"{APP_DIR}/cache/speakers/custom"
 os.makedirs(custom_cache_dir, exist_ok=True)
+
+# Initialize soundtrack manager
+soundtracks_dir = f"{APP_DIR}/soundtracks"
+os.makedirs(soundtracks_dir, exist_ok=True)
+soundtrack_manager = SoundtrackManager(soundtrack_folder=soundtracks_dir)
+logger.info(f"Soundtrack manager initialized with {soundtrack_manager.get_soundtrack_count()} soundtracks")
 
 custom_speaker_manager = CustomSpeakerManager(
     xtts_model=xtts_model,
@@ -351,7 +358,8 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
 multi_speaker_engine = MultiSpeakerInference(
     xtts_model=xtts_model,
     speaker_registry=speaker_registry,
-    inference_fn=inference
+    inference_fn=inference,
+    soundtrack_manager=soundtrack_manager
 )
 logger.info("Multi-speaker inference engine initialized")
 
@@ -369,7 +377,7 @@ def build_gradio_ui():
     def update_help_text(speaker):
         """Update helper text visibility based on speaker selection."""
         if speaker == "Auto":
-            return gr.update(visible=True, value="**Auto mode enabled**: Use tags like `[speaker_id] text` and `[silence 2s]` in your text. Example: `[main_storyteller_1] Once upon a time... [silence 1s] [normal_young_man_1] Hello!`")
+            return gr.update(visible=True, value="**Auto mode enabled**: Use tags like `[speaker_id] text`, `[silence 2s]`, and `[soundtrack 10s fadeout:3s]` in your text. Example: `[soundtrack 10s] [narrator] Once upon a time... [silence 1s] [hero] Hello!`")
         else:
             return gr.update(visible=False)
 

@@ -9,7 +9,7 @@ class MultiSpeakerInference:
     Handle multi-speaker inference with automatic speaker switching and silence insertion.
     """
 
-    def __init__(self, xtts_model, speaker_registry, inference_fn):
+    def __init__(self, xtts_model, speaker_registry, inference_fn, soundtrack_manager=None):
         """
         Initialize the multi-speaker inference engine.
 
@@ -17,10 +17,12 @@ class MultiSpeakerInference:
             xtts_model: The XTTS model instance
             speaker_registry: UnifiedSpeakerRegistry instance
             inference_fn: The inference function to use for TTS generation
+            soundtrack_manager: Optional SoundtrackManager instance for background music
         """
         self.xtts_model = xtts_model
         self.speaker_registry = speaker_registry
         self.inference_fn = inference_fn
+        self.soundtrack_manager = soundtrack_manager
 
     def synthesize_segments(
         self,
@@ -61,6 +63,19 @@ class MultiSpeakerInference:
                 logger.info(f"Segment {i+1}: Silence ({duration}s)")
                 silence_wav = self._generate_silence(duration)
                 out_wavs.append(silence_wav)
+
+            elif segment['type'] == 'soundtrack':
+                # Play background soundtrack
+                duration = segment['duration']
+                fadeout = segment.get('fadeout', 5.0)
+                logger.info(f"Segment {i+1}: Soundtrack ({duration}s, fadeout: {fadeout}s)")
+                soundtrack_wav = self._process_soundtrack(duration, fadeout)
+                if soundtrack_wav is not None:
+                    out_wavs.append(soundtrack_wav)
+                else:
+                    # Fallback to silence if no soundtrack available
+                    silence_wav = self._generate_silence(duration)
+                    out_wavs.append(silence_wav)
 
             elif segment['type'] == 'speech':
                 # Get speaker embeddings
@@ -129,6 +144,23 @@ class MultiSpeakerInference:
         num_samples = int(duration_seconds * sample_rate)
         return np.zeros(num_samples, dtype=np.float32)
 
+    def _process_soundtrack(self, duration_seconds, fadeout_seconds):
+        """
+        Process a soundtrack segment.
+
+        Args:
+            duration_seconds: Duration of the soundtrack in seconds
+            fadeout_seconds: Duration of fade out at the end in seconds
+
+        Returns:
+            numpy.ndarray: Audio array with the soundtrack, or None if unavailable
+        """
+        if self.soundtrack_manager is None:
+            logger.warning("Soundtrack manager not initialized")
+            return None
+
+        return self.soundtrack_manager.get_random_soundtrack(duration_seconds, fadeout_seconds)
+
     def estimate_duration(self, segments):
         """
         Estimate total audio duration from segments.
@@ -145,6 +177,8 @@ class MultiSpeakerInference:
 
         for segment in segments:
             if segment['type'] == 'silence':
+                total_duration += segment['duration']
+            elif segment['type'] == 'soundtrack':
                 total_duration += segment['duration']
             elif segment['type'] == 'speech':
                 # Rough estimate: ~150 words per minute for speech

@@ -26,18 +26,15 @@ def calculate_length_penalty(
         exponent: The power exponent (default: 1.0 for linear)
 
     Returns:
-        float: Length penalty in range [-2.0, 0.0]
+        float: Length penalty in range [-1.5, -0.5]
     """
-    # if text_length <= 45:
-    #     return -2.0
-
     # Clamp text_length to max_length
     clamped_length = min(text_length, max_length)
 
     # Normalize to [0, 1] range
     normalized = clamped_length / max_length
 
-    # Apply power function and scale to [-2, 0] range
-    penalty = (normalized ** exponent) - 2
+    # Apply power function and scale to [-1.5, -0.5] range
+    penalty = (normalized ** exponent) - 1.5
 
     return penalty

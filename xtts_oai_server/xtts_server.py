@@ -147,6 +147,9 @@ logger.info(f"Multi-speaker support initialized with {len(speaker_registry.list_
 
 default_speaker_id = "Aaron Dreschner"
 
+# Cache for last used speaker ID - used as fallback when no speaker is specified in multi-chunk requests
+last_used_speaker_id = default_speaker_id
+
 def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=29.0, language='Auto'):
     """Process text and generate audio."""
     global xtts_model
@@ -300,6 +303,8 @@ logger.info("Multi-speaker inference engine initialized")
 
 async def handle_speech_request(request):
     """Handles the /v1/audio/speech endpoint with multi-speaker support."""
+    global last_used_speaker_id
+
     try:
         # Validate the request's content
         request_data = await request.json()
@@ -319,7 +324,8 @@ async def handle_speech_request(request):
                 logger.info("Using multi-speaker mode (tags detected)")
 
                 # Get default speaker for segments without tags
-                default_speaker = request_data.get('speaker', None)
+                # Use cached speaker as fallback when request doesn't specify one
+                default_speaker = request_data.get('speaker', last_used_speaker_id)
 
                 # Parse text into segments
                 segments = text_parser.parse_text(text_to_speak, default_speaker=default_speaker)
@@ -348,6 +354,12 @@ async def handle_speech_request(request):
 
                 sample_rate = xtts_model.config.audio.sample_rate
 
+                # Update cached speaker with the last speech segment's speaker
+                speech_segments = [s for s in segments if s['type'] == 'speech']
+                if speech_segments:
+                    last_used_speaker_id = speech_segments[-1]['speaker_id']
+                    logger.info(f"Updated cached speaker to: {last_used_speaker_id}")
+
             except ValueError as e:
                 # Speaker validation or parsing error
                 logger.error(f"Multi-speaker error: {e}")
@@ -357,7 +369,8 @@ async def handle_speech_request(request):
             # Single speaker mode (backward compatible)
             logger.info("Using single-speaker mode")
 
-            speaker_id = request_data.get('speaker', default_speaker_id)
+            # Use cached speaker as fallback when request doesn't specify one
+            speaker_id = request_data.get('speaker', last_used_speaker_id)
 
             # Check if speaker exists in registry
             if not speaker_registry.speaker_exists(speaker_id):
@@ -368,6 +381,10 @@ async def handle_speech_request(request):
 
             # Use existing synthesize_speech function
             sample_rate, wav_array = synthesize_speech(text_to_speak, speaker_id=speaker_id, language=language)
+
+            # Update cached speaker
+            last_used_speaker_id = speaker_id
+            logger.info(f"Updated cached speaker to: {last_used_speaker_id}")
 
         # Save and return audio (common for both modes)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:

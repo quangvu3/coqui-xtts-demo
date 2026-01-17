@@ -35,6 +35,6 @@ def calculate_length_penalty(
     normalized = clamped_length / max_length
 
     # Apply power function and scale to [-1.5, -0.5] range
-    penalty = (normalized ** exponent) - 1.5
+    penalty = (normalized ** exponent) * 1.0 - 1.5
 
     return penalty

@@ -29,8 +29,12 @@ class TrimConfig:
     # Text-based prediction parameters
     base_duration_per_char: float = 0.025  # 25ms per character (~40 chars/sec)
     pause_per_punct: float = 0.5  # 500ms pause per punctuation mark
-    text_safety_margin: float = 1.15  # 15% safety buffer on text prediction
+    text_safety_margin: float = 1.15  # 15% safety buffer for short text
     min_length_ratio: float = 0.85  # Never trim more than 15% below prediction
+
+    # Length-aware trimming parameters
+    long_text_threshold: int = 100  # chars beyond which safety margin increases
+    long_text_safety_margin: float = 1.4  # 40% buffer for long text (> threshold)
 
     # Language-specific multipliers for different speech patterns
     language_multipliers: dict = field(default_factory=lambda: {
@@ -243,13 +247,30 @@ def trim_audio(
     # Strategy: text_only - trim based on text prediction
     if strategy == 'text_only':
         predicted_length = predict_audio_length(text, language, sample_rate, config)
-        max_length = int(predicted_length * config.text_safety_margin)
 
-        logger.debug(f"Trimming (text_only): '{text[:50]}...' ({len(text)} chars)")
+        # Dynamic safety margin based on text length
+        # Long text gets more conservative trimming to prevent speech cutoff
+        text_length = len(text)
+        if text_length > config.long_text_threshold:
+            safety_margin = config.long_text_safety_margin  # 40% buffer for long text
+        else:
+            safety_margin = config.text_safety_margin  # 15% buffer for short text
+
+        max_length = int(predicted_length * safety_margin)
+
+        logger.debug(f"Trimming (text_only): '{text[:50]}...' ({text_length} chars)")
         logger.debug(f"  Original: {len(audio_array)} samples ({len(audio_array)/sample_rate:.2f}s)")
         logger.debug(f"  Predicted: {predicted_length} samples ({predicted_length/sample_rate:.2f}s)")
-        logger.debug(f"  Final: {max_length} samples ({max_length/sample_rate:.2f}s)")
+        logger.debug(f"  Safety margin: {safety_margin:.2f} ({'long' if text_length > config.long_text_threshold else 'short'} text)")
+        logger.debug(f"  Max allowed: {max_length} samples ({max_length/sample_rate:.2f}s)")
 
+        # Skip trimming if audio is already within reasonable range
+        # This prevents unnecessary cutting when generation is close to expected
+        if len(audio_array) <= max_length * 1.1:  # within 10% of max allowed
+            logger.debug(f"  Skipping trim: audio length is reasonable")
+            return audio_array
+
+        logger.debug(f"  Final: {max_length} samples ({max_length/sample_rate:.2f}s)")
         return audio_array[:max_length]
 
     # Strategy: energy_only - trim based on energy analysis
@@ -272,7 +293,15 @@ def trim_audio(
     if strategy == 'hybrid':
         # Get prediction from text
         predicted_length = predict_audio_length(text, language, sample_rate, config)
-        max_from_prediction = int(predicted_length * config.text_safety_margin)
+
+        # Dynamic safety margin based on text length
+        text_length = len(text)
+        if text_length > config.long_text_threshold:
+            safety_margin = config.long_text_safety_margin  # 40% buffer for long text
+        else:
+            safety_margin = config.text_safety_margin  # 15% buffer for short text
+
+        max_from_prediction = int(predicted_length * safety_margin)
 
         # Get detection from audio
         detected_endpoint = detect_speech_endpoint(
@@ -288,12 +317,19 @@ def trim_audio(
         min_length = int(predicted_length * config.min_length_ratio)
         final_length = max(min_length, min(max_from_prediction, detected_endpoint))
 
+        # Skip trimming if audio is already within reasonable range
+        if len(audio_array) <= final_length * 1.1:  # within 10% of calculated max
+            logger.debug(f"Trimming (hybrid): '{text[:50]}...' ({text_length} chars)")
+            logger.debug(f"  Skipping trim: audio length ({len(audio_array)/sample_rate:.2f}s) is reasonable")
+            return audio_array
+
         # Calculate reduction percentage
         reduction_pct = 100 * (1 - final_length / len(audio_array)) if len(audio_array) > 0 else 0
 
-        logger.debug(f"Trimming (hybrid): '{text[:50]}...' ({len(text)} chars)")
+        logger.debug(f"Trimming (hybrid): '{text[:50]}...' ({text_length} chars)")
         logger.debug(f"  Original: {len(audio_array)} samples ({len(audio_array)/sample_rate:.2f}s)")
         logger.debug(f"  Predicted: {predicted_length} samples ({predicted_length/sample_rate:.2f}s)")
+        logger.debug(f"  Safety margin: {safety_margin:.2f} ({'long' if text_length > config.long_text_threshold else 'short'} text)")
         logger.debug(f"  Max from prediction: {max_from_prediction} samples ({max_from_prediction/sample_rate:.2f}s)")
         logger.debug(f"  Detected endpoint: {detected_endpoint} samples ({detected_endpoint/sample_rate:.2f}s)")
         logger.debug(f"  Min allowed: {min_length} samples ({min_length/sample_rate:.2f}s)")

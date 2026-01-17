@@ -258,15 +258,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     enable_text_splitting=True,
                 )
 
-                # Trim audio to remove excess silence and over-generation
-                sentence_wav = trim_audio(
-                    audio_array=out["wav"],
-                    text=txt,
-                    language=lang,
-                    sample_rate=xtts_model.config.audio.sample_rate,
-                    strategy='text_only',
-                    config=TRIM_CONFIG
-                )
+                sentence_wav = out["wav"]
 
                 # Add silence after each sentence (except the last one)
                 if sentence_silence_ms > 0 and i < len(sentences) - 1:

@@ -284,9 +284,10 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
 
 
 def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=29.0, sentence_silence_ms=500):
-    # Bypass empty text (only marks/spaces)
-    if not input_text or not any(c.isalnum() for c in input_text):
-        logger.debug(f"Skipping empty text: '{input_text[:50] if input_text else input_text}'")
+    # Bypass text with fewer than 2 alphabetic characters
+    alpha_count = sum(1 for c in input_text if c.isalpha()) if input_text else 0
+    if alpha_count < 2:
+        logger.debug(f"Skipping text with insufficient alphabetic chars ({alpha_count}): '{input_text[:50] if input_text else input_text}'")
         return np.array([]), 0
 
     # If a language is specified, use it, otherwise detect it.

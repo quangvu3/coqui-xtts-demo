@@ -218,6 +218,12 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
     Returns:
         tuple: (final_wav_array, num_of_tokens)
     """
+    # Bypass text with fewer than 2 alphabetic characters
+    alpha_count = sum(1 for c in input_text if c.isalpha()) if input_text else 0
+    if alpha_count < 2:
+        logger.debug(f"Skipping text with insufficient alphabetic chars ({alpha_count}): '{input_text[:50] if input_text else input_text}'")
+        return np.array([]), 0
+
     language_code = lang_detect(input_text) if language == 'Auto' else language_dict.get(language, 'en')
 
     # Use default speaker if none specified

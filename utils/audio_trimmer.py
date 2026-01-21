@@ -24,8 +24,8 @@ except ImportError:
 
 logger = setup_logger(__file__)
 
-# Vietnamese audio duration: 0.35 seconds per word (word-based prediction)
-VI_AUDIO_PER_WORD = 0.35
+# Vietnamese audio duration: 0.32 seconds per word (word-based prediction)
+VI_AUDIO_PER_WORD = 0.32
 
 
 def _ensure_1d_array(audio):

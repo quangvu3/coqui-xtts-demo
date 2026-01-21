@@ -274,7 +274,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     sample_rate=xtts_model.config.audio.sample_rate,
                     inference_fn=xtts_model.inference,
                     word_threshold=21,
-                    length_tolerance=1.2,
+                    length_tolerance=1.1,
                     max_retries=10,
                     config=TRIM_CONFIG,
                     gpt_cond_latent=gpt_cond_latent,
@@ -363,9 +363,9 @@ async def handle_speech_request(request):
                 wav_array, _ = multi_speaker_engine.synthesize_segments(
                     segments,
                     language=language,
-                    temperature=0.3,
+                    temperature=0.2,
                     top_p=0.85,
-                    top_k=50,
+                    top_k=40,
                     repetition_penalty=29.0,
                     sentence_silence_ms=500
                 )

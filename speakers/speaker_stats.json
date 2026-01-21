@@ -1,37 +1,37 @@
 {
   "storyteller_1": {
-    "generation_count": 956,
-    "last_used": "2026-01-21T13:44:51.408496+00:00",
+    "generation_count": 1964,
+    "last_used": "2026-01-21T15:25:24.184427+00:00",
     "languages": {
       "vi": {
-        "total_words": 34279,
-        "total_chars": 154247,
-        "total_samples": 257210723,
-        "generation_count": 955,
-        "audio_per_word": 0.3421814432938393,
-        "audio_per_char": 0.07638234432996463
+        "total_words": 68580,
+        "total_chars": 308085,
+        "total_samples": 511067541,
+        "generation_count": 1961,
+        "audio_per_word": 0.34607211947298117,
+        "audio_per_char": 0.08076574486472776
       },
       "en": {
-        "total_words": 1,
-        "total_chars": 1,
+        "total_words": 3,
+        "total_chars": 3,
         "total_samples": 0,
-        "generation_count": 1,
+        "generation_count": 3,
         "audio_per_word": 0.0,
         "audio_per_char": 0.0
       }
     }
   },
   "young_man_1": {
-    "generation_count": 255,
-    "last_used": "2026-01-21T13:44:46.852381+00:00",
+    "generation_count": 428,
+    "last_used": "2026-01-21T15:23:52.881601+00:00",
     "languages": {
       "vi": {
-        "total_words": 4895,
-        "total_chars": 20835,
-        "total_samples": 31649161,
-        "generation_count": 251,
-        "audio_per_word": 0.298189909182857,
-        "audio_per_char": 0.06499700861118574
+        "total_words": 7908,
+        "total_chars": 33677,
+        "total_samples": 51118807,
+        "generation_count": 424,
+        "audio_per_word": 0.37738281600690904,
+        "audio_per_char": 0.07857896837172358
       },
       "hu": {
         "total_words": 2,
@@ -66,16 +66,16 @@
     }
   },
   "old_man_3": {
-    "generation_count": 24,
-    "last_used": "2026-01-21T13:00:51.439758+00:00",
+    "generation_count": 34,
+    "last_used": "2026-01-21T14:37:07.862903+00:00",
     "languages": {
       "vi": {
-        "total_words": 840,
-        "total_chars": 3398,
-        "total_samples": 5296264,
-        "generation_count": 24,
-        "audio_per_word": 0.28598064442182,
-        "audio_per_char": 0.07082875725957077
+        "total_words": 1032,
+        "total_chars": 4192,
+        "total_samples": 6677934,
+        "generation_count": 34,
+        "audio_per_word": 0.34192146079604413,
+        "audio_per_char": 0.08253829060868487
       }
     }
   },
@@ -94,72 +94,72 @@
     }
   },
   "storyteller_2": {
-    "generation_count": 34,
-    "last_used": "2026-01-21T13:37:37.422401+00:00",
+    "generation_count": 74,
+    "last_used": "2026-01-21T15:22:51.361359+00:00",
     "languages": {
       "vi": {
-        "total_words": 274,
-        "total_chars": 1252,
-        "total_samples": 2551226,
-        "generation_count": 34,
-        "audio_per_word": 0.5276769165995053,
-        "audio_per_char": 0.10921811415645279
+        "total_words": 616,
+        "total_chars": 2832,
+        "total_samples": 5584541,
+        "generation_count": 74,
+        "audio_per_word": 0.4000082321786022,
+        "audio_per_char": 0.08612252870403504
       }
     }
   },
   "young_man_4": {
-    "generation_count": 36,
-    "last_used": "2026-01-21T13:28:16.643179+00:00",
+    "generation_count": 92,
+    "last_used": "2026-01-21T15:22:39.660324+00:00",
     "languages": {
       "vi": {
-        "total_words": 808,
-        "total_chars": 3555,
-        "total_samples": 6820452,
-        "generation_count": 36,
-        "audio_per_word": 0.7685891591567211,
-        "audio_per_char": 0.1368395676509201
+        "total_words": 1800,
+        "total_chars": 7823,
+        "total_samples": 16043661,
+        "generation_count": 92,
+        "audio_per_word": 0.35527735577926123,
+        "audio_per_char": 0.0852367292754005
       }
     }
   },
   "young_man_2": {
-    "generation_count": 102,
-    "last_used": "2026-01-21T13:38:12.684796+00:00",
+    "generation_count": 176,
+    "last_used": "2026-01-21T15:24:41.271954+00:00",
     "languages": {
       "vi": {
-        "total_words": 3001,
-        "total_chars": 12820,
-        "total_samples": 19819035,
-        "generation_count": 102,
-        "audio_per_word": 0.30173514591506284,
-        "audio_per_char": 0.07088227659888204
+        "total_words": 4639,
+        "total_chars": 19668,
+        "total_samples": 31436740,
+        "generation_count": 176,
+        "audio_per_word": 0.3296515848108369,
+        "audio_per_char": 0.08539754053025624
       }
     }
   },
   "young_man_3": {
-    "generation_count": 8,
-    "last_used": "2026-01-21T13:38:02.121103+00:00",
+    "generation_count": 15,
+    "last_used": "2026-01-21T15:24:27.375384+00:00",
     "languages": {
       "vi": {
-        "total_words": 328,
-        "total_chars": 1384,
-        "total_samples": 2139983,
-        "generation_count": 8,
-        "audio_per_word": 0.28967807790028627,
-        "audio_per_char": 0.06863724440597464
+        "total_words": 593,
+        "total_chars": 2554,
+        "total_samples": 3835010,
+        "generation_count": 15,
+        "audio_per_word": 0.2863823671485748,
+        "audio_per_char": 0.06317306256602392
       }
     }
   },
   "old_man_2": {
-    "generation_count": 40,
-    "last_used": "2026-01-21T13:09:19.969230+00:00",
+    "generation_count": 44,
+    "last_used": "2026-01-21T14:37:03.085628+00:00",
     "languages": {
       "vi": {
-        "total_words": 770,
-        "total_chars": 3223,
-        "total_samples": 5045896,
-        "generation_count": 40,
-        "audio_per_word": 0.40512116196599046,
-        "audio_per_char": 0.09573769797501659
+        "total_words": 862,
+        "total_chars": 3623,
+        "total_samples": 5575816,
+        "generation_count": 44,
+        "audio_per_word": 0.32043826237761674,
+        "audio_per_char": 0.0740682049980569
       }
     }
   },
@@ -182,6 +182,20 @@
         "generation_count": 14,
         "audio_per_word": 0.4622745807924617,
         "audio_per_char": 0.11519515757408066
+      }
+    }
+  },
+  "young_man_5": {
+    "generation_count": 12,
+    "last_used": "2026-01-21T15:14:01.235510+00:00",
+    "languages": {
+      "vi": {
+        "total_words": 421,
+        "total_chars": 1853,
+        "total_samples": 3235866,
+        "generation_count": 12,
+        "audio_per_word": 0.36462814671868093,
+        "audio_per_char": 0.08271866376731886
       }
     }
   }

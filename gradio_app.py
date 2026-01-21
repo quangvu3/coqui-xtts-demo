@@ -391,7 +391,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                         sample_rate=xtts_model.config.audio.sample_rate
                     )
 
-                # Trim trailing silence and clicks
+                # Trim trailing silence
                 trimmed_wav = trim_audio_end(trimmed_wav, sample_rate=24000)
 
                 out_wavs.append(trimmed_wav)

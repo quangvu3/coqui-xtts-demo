@@ -150,7 +150,7 @@ default_speaker_id = "Aaron Dreschner"
 # Cache for last used speaker ID - used as fallback when no speaker is specified in multi-chunk requests
 last_used_speaker_id = default_speaker_id
 
-def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=29.0, language='Auto'):
+def synthesize_speech(input_text, speaker_id, temperature=0.2, top_p=0.85, top_k=40, repetition_penalty=29.0, language='Auto'):
     """Process text and generate audio."""
     global xtts_model
     
@@ -196,7 +196,7 @@ def add_silence_to_wav_array(wav_array, sample_rate=24000, silence_ms=1000):
     return np.concatenate([wav_array, silence])
 
 def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None,
-              temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=29.0, sentence_silence_ms=500):
+              temperature=0.2, top_p=0.85, top_k=40, repetition_penalty=29.0, sentence_silence_ms=500):
     """
     Generate speech from text with silence padding options.
     
@@ -273,7 +273,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     language=lang,
                     sample_rate=xtts_model.config.audio.sample_rate,
                     inference_fn=xtts_model.inference,
-                    word_threshold=15,
+                    word_threshold=21,
                     length_tolerance=1.2,
                     max_retries=10,
                     config=TRIM_CONFIG,

@@ -24,8 +24,8 @@ except ImportError:
 
 logger = setup_logger(__file__)
 
-# Vietnamese audio duration: 0.6 seconds per word (word-based prediction)
-VI_AUDIO_PER_WORD = 0.6
+# Vietnamese audio duration: 0.35 seconds per word (word-based prediction)
+VI_AUDIO_PER_WORD = 0.35
 
 
 def _ensure_1d_array(audio):
@@ -534,15 +534,17 @@ def validate_audio_length(
     best_length = float('inf')
 
     for retry in range(max_retries):
-        length_penalty = -0.2
+        length_penalty = random.uniform(-2.0, -1.5)
+        temperature = random.uniform(1.0, 2.0)
 
         try:
-            logger.debug(f"  Retry {retry + 1}/{max_retries}: length_penalty={length_penalty:.3f}")
+            logger.debug(f"  Retry {retry + 1}/{max_retries}: length_penalty={length_penalty:.3f}, temperature={temperature:.3f}")
+            # Override temperature in kwargs (avoid duplicate keyword error)
+            retry_kwargs = {**inference_kwargs, 'length_penalty': length_penalty, 'temperature': temperature}
             out = inference_fn(
                 text=text,
                 language=language,
-                length_penalty=length_penalty,
-                **inference_kwargs
+                **retry_kwargs
             )
             retry_audio = _ensure_1d_array(out["wav"])
             retry_length = len(retry_audio)
@@ -550,6 +552,7 @@ def validate_audio_length(
             # Store all attempts
             all_attempts.append({
                 'length_penalty': length_penalty,
+                'temperature': temperature,
                 'audio': retry_audio,
                 'length': retry_length,
             })
@@ -571,7 +574,7 @@ def validate_audio_length(
     if all_attempts:
         lengths = [a['length'] for a in all_attempts]
         logger.debug(f"  All attempts lengths: {lengths}")
-        logger.debug(f"  Best attempt: {best_length} samples ({best_length/sample_rate:.2f}s)" if best_audio else f"  No valid attempts")
+        logger.debug(f"  Best attempt: {best_length} samples ({best_length/sample_rate:.2f}s)" if best_audio is not None else f"  No valid attempts")
 
     # If we have a valid result, return the best (shortest) one
     if best_audio is not None:

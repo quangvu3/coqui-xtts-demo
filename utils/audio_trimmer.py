@@ -5,6 +5,10 @@ This module provides audio length validation and retry logic for short text segm
 It helps prevent the common issue where short sentences generate unnecessarily long
 audio with trailing silence or artifacts.
 
+Additionally provides audio end trimming functionality to:
+- Remove excessive trailing silence (keeping max 0.5s)
+- Detect and remove click/pop artifacts at audio segment ends
+
 Per-Speaker Learning:
     When a SpeakerStatsTracker is provided to the prediction functions, speaker-specific
     learned rates will be used instead of global defaults. This allows the system to
@@ -13,7 +17,7 @@ Per-Speaker Learning:
 
 import random
 import numpy as np
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
 from utils.logger import setup_logger
 from utils.speaker_stats import SpeakerStatsTracker
 
@@ -369,4 +373,251 @@ def validate_audio_length(
 
     # Fallback: return original audio
     logger.warning("  All retries failed - returning original audio")
+    return audio
+
+
+def detect_trailing_silence_start(
+    audio: np.ndarray,
+    sample_rate: int = 24000,
+    silence_threshold_db: float = -40.0,
+    frame_length_ms: float = 25.0,
+    hop_length_ms: float = 10.0
+) -> int:
+    """
+    Detect where trailing silence begins using RMS energy analysis.
+
+    Works backwards from the end of audio to find where continuous silence starts.
+    Uses frame-based RMS analysis to detect when audio energy drops below threshold.
+
+    Args:
+        audio: 1D numpy array of audio samples
+        sample_rate: Audio sample rate (default: 24000)
+        silence_threshold_db: RMS below this (in dB) is considered silence (default: -40.0)
+        frame_length_ms: Analysis frame length in milliseconds (default: 25.0)
+        hop_length_ms: Hop between frames in milliseconds (default: 10.0)
+
+    Returns:
+        int: Sample index where trailing silence begins (or len(audio) if no silence)
+
+    Examples:
+        >>> audio = np.concatenate([np.sin(np.linspace(0, 100, 24000)), np.zeros(12000)])
+        >>> detect_trailing_silence_start(audio)
+        24000  # Silence starts at sample 24000
+    """
+    audio = _ensure_1d_array(audio)
+
+    if len(audio) == 0:
+        return 0
+
+    # Convert parameters to samples
+    frame_length = int((frame_length_ms / 1000.0) * sample_rate)
+    hop_length = int((hop_length_ms / 1000.0) * sample_rate)
+
+    # Convert dB threshold to linear amplitude
+    # RMS threshold: 10^(dB/20)
+    silence_threshold = 10 ** (silence_threshold_db / 20.0)
+
+    # Calculate number of frames
+    num_frames = max(1, (len(audio) - frame_length) // hop_length + 1)
+
+    # Work backwards through frames
+    silence_start_frame = num_frames  # Default: no silence detected
+
+    for frame_idx in range(num_frames - 1, -1, -1):
+        start_sample = frame_idx * hop_length
+        end_sample = min(start_sample + frame_length, len(audio))
+        frame = audio[start_sample:end_sample]
+
+        # Calculate RMS energy
+        rms = np.sqrt(np.mean(frame ** 2))
+
+        if rms > silence_threshold:
+            # Found non-silent frame, silence starts after this frame
+            silence_start_frame = frame_idx + 1
+            break
+    else:
+        # All frames are silent
+        silence_start_frame = 0
+
+    # Convert frame index to sample index
+    silence_start_sample = silence_start_frame * hop_length
+
+    return min(silence_start_sample, len(audio))
+
+
+def detect_end_clicks(
+    audio: np.ndarray,
+    sample_rate: int = 24000,
+    search_region_ms: float = 200.0,
+    click_threshold_factor: float = 3.0,
+    window_ms: float = 20.0
+) -> int:
+    """
+    Detect clicks/pops near the end of audio using amplitude spike detection.
+
+    Looks for sudden amplitude spikes in the final portion of the audio that
+    indicate click or pop artifacts (common in TTS synthesis).
+
+    Args:
+        audio: 1D numpy array of audio samples
+        sample_rate: Audio sample rate (default: 24000)
+        search_region_ms: How far back from end to search in ms (default: 200.0)
+        click_threshold_factor: Peak/RMS ratio to detect click (default: 3.0)
+        window_ms: Sliding window size in ms for local RMS (default: 20.0)
+
+    Returns:
+        int: Sample index where click begins, or len(audio) if no click detected
+
+    Examples:
+        >>> # Audio with click at end
+        >>> audio = np.concatenate([np.sin(np.linspace(0, 100, 24000)), np.array([0.9, -0.8])])
+        >>> click_start = detect_end_clicks(audio)
+        >>> click_start < len(audio)
+        True
+    """
+    audio = _ensure_1d_array(audio)
+
+    if len(audio) == 0:
+        return 0
+
+    # Convert parameters to samples
+    search_region_samples = int((search_region_ms / 1000.0) * sample_rate)
+    window_samples = int((window_ms / 1000.0) * sample_rate)
+
+    # Limit search region to audio length
+    search_region_samples = min(search_region_samples, len(audio))
+    window_samples = max(1, min(window_samples, search_region_samples // 4))
+
+    # Get the search region (end portion of audio)
+    search_start = len(audio) - search_region_samples
+    search_region = audio[search_start:]
+
+    # Calculate overall RMS of the search region
+    overall_rms = np.sqrt(np.mean(search_region ** 2))
+
+    if overall_rms < 1e-10:
+        # Audio is essentially silent, no clicks to detect
+        return len(audio)
+
+    # Slide through search region looking for spikes
+    click_position = len(audio)  # Default: no click detected
+
+    for i in range(len(search_region) - window_samples):
+        window = search_region[i:i + window_samples]
+        window_rms = np.sqrt(np.mean(window ** 2))
+        peak = np.max(np.abs(window))
+
+        # Check for spike: peak significantly higher than local RMS
+        if window_rms > 1e-10 and peak / window_rms > click_threshold_factor:
+            # Also verify this is actually higher than surrounding context
+            context_start = max(0, i - window_samples)
+            context_end = min(len(search_region), i + 2 * window_samples)
+            context = search_region[context_start:context_end]
+            context_rms = np.sqrt(np.mean(context ** 2))
+
+            if peak > context_rms * click_threshold_factor:
+                # Found a click - mark position and continue searching
+                # (we want the first click in the region)
+                click_position = search_start + i
+                break
+
+    return click_position
+
+
+def trim_audio_end(
+    audio: np.ndarray,
+    sample_rate: int = 24000,
+    max_trailing_silence_ms: float = 500.0,
+    silence_threshold_db: float = -40.0,
+    click_detection_enabled: bool = True,
+    click_threshold_factor: float = 3.0,
+    min_audio_ms: float = 100.0,
+    fade_out_ms: float = 10.0
+) -> np.ndarray:
+    """
+    Trim trailing silence and remove end-of-audio clicks/pops.
+
+    This function:
+    1. Detects and removes click artifacts at the end (if enabled)
+    2. Trims excessive trailing silence, keeping up to max_trailing_silence_ms
+    3. Applies a short fade-out to prevent new clicks from trimming
+
+    Args:
+        audio: Audio numpy array (will be converted to 1D if needed)
+        sample_rate: Audio sample rate (default: 24000)
+        max_trailing_silence_ms: Maximum trailing silence to keep in ms (default: 500.0)
+        silence_threshold_db: RMS below this (in dB) is considered silence (default: -40.0)
+        click_detection_enabled: Whether to detect/remove end clicks (default: True)
+        click_threshold_factor: Peak/RMS ratio to detect click (default: 3.0)
+        min_audio_ms: Never trim below this duration in ms (default: 100.0)
+        fade_out_ms: Fade-out duration to apply at trim point in ms (default: 10.0)
+
+    Returns:
+        np.ndarray: Trimmed audio array
+
+    Examples:
+        >>> # Audio with 1 second of trailing silence
+        >>> speech = np.sin(np.linspace(0, 100, 24000))  # 1 second
+        >>> silence = np.zeros(24000)  # 1 second silence
+        >>> audio = np.concatenate([speech, silence])
+        >>> trimmed = trim_audio_end(audio, max_trailing_silence_ms=500)
+        >>> len(trimmed) < len(audio)  # Trimmed to ~1.5s (1s speech + 0.5s silence)
+        True
+    """
+    audio = _ensure_1d_array(audio)
+
+    if len(audio) == 0:
+        return audio
+
+    # Calculate minimum samples to keep
+    min_samples = int((min_audio_ms / 1000.0) * sample_rate)
+    max_silence_samples = int((max_trailing_silence_ms / 1000.0) * sample_rate)
+    fade_samples = int((fade_out_ms / 1000.0) * sample_rate)
+
+    original_length = len(audio)
+    trim_point = original_length
+
+    # Step 1: Detect clicks at the end (if enabled)
+    if click_detection_enabled:
+        click_start = detect_end_clicks(
+            audio,
+            sample_rate=sample_rate,
+            click_threshold_factor=click_threshold_factor
+        )
+        if click_start < original_length:
+            trim_point = click_start
+            logger.debug(f"Click detected at sample {click_start} ({click_start/sample_rate:.3f}s)")
+
+    # Step 2: Detect trailing silence
+    silence_start = detect_trailing_silence_start(
+        audio[:trim_point],  # Only analyze up to click point
+        sample_rate=sample_rate,
+        silence_threshold_db=silence_threshold_db
+    )
+
+    # Step 3: Calculate final trim point
+    # Keep at most max_trailing_silence_ms of silence after speech ends
+    if silence_start < trim_point:
+        allowed_silence_end = silence_start + max_silence_samples
+        trim_point = min(trim_point, allowed_silence_end)
+        logger.debug(f"Silence starts at sample {silence_start} ({silence_start/sample_rate:.3f}s)")
+
+    # Step 4: Enforce minimum length
+    trim_point = max(trim_point, min_samples)
+
+    # Step 5: Apply fade-out if we're trimming
+    if trim_point < original_length:
+        trimmed = audio[:trim_point].copy()
+
+        # Apply fade-out at the end to prevent new clicks
+        if fade_samples > 0 and len(trimmed) > fade_samples:
+            fade_curve = np.linspace(1.0, 0.0, fade_samples)
+            trimmed[-fade_samples:] = trimmed[-fade_samples:] * fade_curve
+
+        logger.debug(
+            f"Trimmed audio: {original_length} -> {trim_point} samples "
+            f"({original_length/sample_rate:.3f}s -> {trim_point/sample_rate:.3f}s)"
+        )
+        return trimmed
+
     return audio

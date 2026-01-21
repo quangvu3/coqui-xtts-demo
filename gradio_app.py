@@ -21,7 +21,7 @@ from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences
 from utils.length_penalty import calculate_length_penalty
-from utils.audio_trimmer import validate_audio_length
+from utils.audio_trimmer import validate_audio_length, trim_audio_end
 from utils.speaker_stats import SpeakerStatsTracker
 
 # Import multi-speaker support modules
@@ -390,6 +390,9 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                         audio_samples=audio_samples,
                         sample_rate=xtts_model.config.audio.sample_rate
                     )
+
+                # Trim trailing silence and clicks
+                trimmed_wav = trim_audio_end(trimmed_wav, sample_rate=24000)
 
                 out_wavs.append(trimmed_wav)
             except Exception as e:

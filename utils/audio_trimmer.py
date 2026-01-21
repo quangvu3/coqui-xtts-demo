@@ -7,6 +7,11 @@ approach combining text-based duration prediction with audio energy analysis.
 
 The trimming system helps prevent the common issue where short sentences
 generate unnecessarily long audio with trailing silence or artifacts.
+
+Per-Speaker Learning:
+    When a SpeakerStatsTracker is configured in TrimConfig, the prediction
+    functions will use speaker-specific learned rates instead of global defaults.
+    This allows the system to adapt to individual speaker speaking patterns.
 """
 
 import random
@@ -14,6 +19,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 from utils.logger import setup_logger
+from utils.speaker_stats import SpeakerStatsTracker
 
 # Try to import torch for tensor handling
 try:
@@ -48,6 +54,10 @@ class TrimConfig:
     This configuration allows fine-tuning of the trimming algorithm for
     different use cases and languages. All duration-related values are
     in seconds unless otherwise specified.
+
+    Per-Speaker Learning:
+        When `speaker_stats_tracker` is set, the prediction functions will
+        automatically use speaker-specific learned rates for better accuracy.
     """
 
     # Text-based prediction parameters
@@ -81,8 +91,13 @@ class TrimConfig:
         'hu': 1.0,      # Hungarian
     })
 
-    # Vietnamese word-based prediction: seconds per word
-    vi_audio_per_word: float = 0.6
+    # Fallback rates (used when no learned data available)
+    fallback_vi_audio_per_word: float = 0.6  # Fallback for Vietnamese
+    fallback_audio_per_char: float = 0.025   # Fallback for other languages
+
+    # Per-speaker learning configuration
+    speaker_stats_tracker: Optional[SpeakerStatsTracker] = None  # Set to enable per-speaker learning
+    use_learned_rates: bool = True  # Use speaker-specific rates when available
 
     # Word count adjustments for very short sentences
     short_sentence_thresholds: dict = field(default_factory=lambda: {
@@ -105,18 +120,21 @@ class TrimConfig:
 def predict_vietnamese_audio_length(
     text: str,
     sample_rate: int = 24000,
-    config: Optional[TrimConfig] = None
+    config: Optional[TrimConfig] = None,
+    speaker_id: Optional[str] = None
 ) -> int:
     """
     Predict Vietnamese audio length using word-based calculation.
 
     Vietnamese text uses spaces between words, making word count a reliable
-    predictor of audio duration. Uses 0.6 seconds per word as the standard.
+    predictor of audio duration. Uses speaker-specific learned rate if available,
+    otherwise falls back to the configured default (0.6 seconds per word).
 
     Args:
         text: Input Vietnamese text to synthesize
         sample_rate: Audio sample rate (default: 24000)
         config: Optional TrimConfig for customization
+        speaker_id: Optional speaker ID for using learned rates
 
     Returns:
         int: Predicted audio length in samples
@@ -131,7 +149,20 @@ def predict_vietnamese_audio_length(
     config = config or TrimConfig()
 
     word_count = len(text.split())
-    expected_seconds = word_count * config.vi_audio_per_word
+
+    # Try to use learned rate from speaker stats
+    audio_per_word = None
+    if speaker_id and config.speaker_stats_tracker and config.use_learned_rates:
+        audio_per_word = config.speaker_stats_tracker.get_audio_per_word(
+            speaker_id, 'vi', config.fallback_vi_audio_per_word
+        )
+        logger.debug(f"Using learned rate for {speaker_id}/vi: {audio_per_word:.4f}s/word")
+
+    # Fall back to config default if no learned rate available
+    if audio_per_word is None:
+        audio_per_word = config.fallback_vi_audio_per_word
+
+    expected_seconds = word_count * audio_per_word
 
     return int(expected_seconds * sample_rate)
 
@@ -140,7 +171,8 @@ def predict_audio_length(
     text: str,
     language: str,
     sample_rate: int = 24000,
-    config: Optional[TrimConfig] = None
+    config: Optional[TrimConfig] = None,
+    speaker_id: Optional[str] = None
 ) -> int:
     """
     Predict expected audio duration from text characteristics.
@@ -149,11 +181,15 @@ def predict_audio_length(
     uses word-based calculation since Vietnamese has spaces between words
     and character count doesn't map well to speech duration.
 
+    When a speaker_stats_tracker is configured and speaker_id is provided,
+    uses speaker-specific learned rates for better prediction accuracy.
+
     Args:
         text: Input text to synthesize
         language: Language code (en, vi, ja, zh-cn, etc.)
         sample_rate: Audio sample rate (default: 24000)
         config: Optional TrimConfig for customization
+        speaker_id: Optional speaker ID for using learned rates
 
     Returns:
         int: Predicted audio length in samples
@@ -172,9 +208,19 @@ def predict_audio_length(
 
     # Vietnamese uses word-based prediction
     if language == 'vi':
-        return predict_vietnamese_audio_length(text, sample_rate, config)
+        return predict_vietnamese_audio_length(text, sample_rate, config, speaker_id)
 
-    # Base calculation using character count
+    # Try to use learned rate for character-based languages
+    if speaker_id and config.speaker_stats_tracker and config.use_learned_rates:
+        audio_per_char = config.speaker_stats_tracker.get_audio_per_char(
+            speaker_id, language, config.fallback_audio_per_char
+        )
+        char_count = len(text)
+        expected_seconds = char_count * audio_per_char
+        logger.debug(f"Using learned rate for {speaker_id}/{language}: {audio_per_char:.4f}s/char")
+        return int(expected_seconds * sample_rate)
+
+    # Fall back to default character-based calculation
     text_length = len(text)
     base_samples = text_length * config.base_duration_per_char * sample_rate
 
@@ -267,7 +313,8 @@ def trim_audio(
     language: str,
     sample_rate: int = 24000,
     strategy: str = 'text_only',
-    config: Optional[TrimConfig] = None
+    config: Optional[TrimConfig] = None,
+    speaker_id: Optional[str] = None
 ) -> np.ndarray:
     """
     Trim generated audio to remove excess silence and over-generation.
@@ -283,6 +330,7 @@ def trim_audio(
         sample_rate: Audio sample rate (default: 24000)
         strategy: Trimming strategy - 'hybrid', 'text_only', 'energy_only', 'none'
         config: Optional TrimConfig object for fine-tuning
+        speaker_id: Optional speaker ID for using learned rates
 
     Returns:
         np.ndarray: Trimmed audio array
@@ -318,7 +366,7 @@ def trim_audio(
 
     # Strategy: text_only - trim based on text prediction
     if strategy == 'text_only':
-        predicted_length = predict_audio_length(text, language, sample_rate, config)
+        predicted_length = predict_audio_length(text, language, sample_rate, config, speaker_id)
 
         # Dynamic safety margin based on text length
         # Long text gets more conservative trimming to prevent speech cutoff
@@ -364,7 +412,7 @@ def trim_audio(
     # Strategy: hybrid - combine both approaches
     if strategy == 'hybrid':
         # Get prediction from text
-        predicted_length = predict_audio_length(text, language, sample_rate, config)
+        predicted_length = predict_audio_length(text, language, sample_rate, config, speaker_id)
 
         # Dynamic safety margin based on text length
         text_length = len(text)
@@ -422,9 +470,10 @@ def validate_audio_length(
     sample_rate: int = 24000,
     inference_fn: Optional[Callable] = None,
     word_threshold: int = 15,
-    length_tolerance: float = 1.5,
+    length_tolerance: float = 1.3,
     max_retries: int = 5,
     config: Optional[TrimConfig] = None,
+    speaker_id: Optional[str] = None,
     **inference_kwargs
 ) -> np.ndarray:
     """
@@ -448,6 +497,7 @@ def validate_audio_length(
         length_tolerance: Retry if actual > expected * tolerance (default: 1.5)
         max_retries: Number of retry attempts (default: 5)
         config: Optional TrimConfig for prediction parameters
+        speaker_id: Optional speaker ID for using learned rates
         **inference_kwargs: Additional arguments passed to inference_fn on retry
 
     Returns:
@@ -488,11 +538,12 @@ def validate_audio_length(
             language=language,
             sample_rate=sample_rate,
             strategy='text_only',
-            config=config
+            config=config,
+            speaker_id=speaker_id
         )
 
     # Estimate expected audio length
-    expected_length = predict_audio_length(text, language, sample_rate, config)
+    expected_length = predict_audio_length(text, language, sample_rate, config, speaker_id)
     actual_length = len(audio)
 
     logger.debug(f"Validating short text ({word_count} words): '{text[:50]}...'")
@@ -510,7 +561,8 @@ def validate_audio_length(
             language=language,
             sample_rate=sample_rate,
             strategy='text_only',
-            config=config
+            config=config,
+            speaker_id=speaker_id
         )
 
     # Audio is too long - need to retry with adjusted length_penalty
@@ -525,7 +577,8 @@ def validate_audio_length(
             language=language,
             sample_rate=sample_rate,
             strategy='text_only',
-            config=config
+            config=config,
+            speaker_id=speaker_id
         )
 
     # Track all retry results and best result (shortest within tolerance)
@@ -585,7 +638,8 @@ def validate_audio_length(
             language=language,
             sample_rate=sample_rate,
             strategy='text_only',
-            config=config
+            config=config,
+            speaker_id=speaker_id
         )
 
     # No valid result - select shortest from all attempts
@@ -598,7 +652,8 @@ def validate_audio_length(
             language=language,
             sample_rate=sample_rate,
             strategy='text_only',
-            config=config
+            config=config,
+            speaker_id=speaker_id
         )
 
     # Fallback: return original audio trimmed
@@ -609,5 +664,6 @@ def validate_audio_length(
         language=language,
         sample_rate=sample_rate,
         strategy='text_only',
-        config=config
+        config=config,
+        speaker_id=speaker_id
     )

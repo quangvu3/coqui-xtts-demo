@@ -22,6 +22,7 @@ from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences
 from utils.length_penalty import calculate_length_penalty
 from utils.audio_trimmer import trim_audio, validate_audio_length, TrimConfig
+from utils.speaker_stats import SpeakerStatsTracker
 
 # Import multi-speaker support modules
 from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
@@ -69,6 +70,12 @@ use_deepspeed = False
 
 # Initialize audio trimming configuration
 TRIM_CONFIG = TrimConfig()
+
+# Initialize per-speaker stats tracker
+SPEAKER_STATS_PATH = f"{APP_DIR}/speakers/speaker_stats.json"
+speaker_stats_tracker = SpeakerStatsTracker(stats_path=SPEAKER_STATS_PATH)
+TRIM_CONFIG.speaker_stats_tracker = speaker_stats_tracker
+logger.info(f"Speaker stats tracker initialized at {SPEAKER_STATS_PATH}")
 
 try:
     import spaces
@@ -149,7 +156,7 @@ multi_speaker_engine = None
 logger.info(f"Multi-speaker support initialized with {len(speaker_registry.list_all_speakers())} speakers")
 
 default_speaker_reference_audio = os.path.join(sample_audio_dir, 'harvard.wav')
-default_speaker_id = "Aaron Dreschner"
+default_speaker_id = "storyteller_1"
 
 def validate_input(input_text, language):
     log_messages = ""
@@ -285,6 +292,10 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
     # This is used for sentence splitting.
     lang_for_split = language_dict.get(language, 'en') if language != 'Auto' else lang_detect(input_text)
 
+    # Use default speaker if none specified
+    if speaker_id is None:
+        speaker_id = default_speaker_id
+
     # Split text by sentence
     if lang_for_split in ["ja", "zh-cn"]:
         sentences = input_text.split("。")
@@ -344,6 +355,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     length_tolerance=1.3,
                     max_retries=5,
                     config=TRIM_CONFIG,
+                    speaker_id=speaker_id,
                     gpt_cond_latent=gpt_cond_latent,
                     speaker_embedding=speaker_embedding,
                     temperature=temperature,
@@ -352,6 +364,32 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     repetition_penalty=repetition_penalty*1.0,
                     enable_text_splitting=True,
                 )
+
+                # Record generation statistics for per-speaker learning
+                if speaker_id and speaker_stats_tracker:
+                    # Get audio samples (without silence padding)
+                    audio_for_stats = trimmed_wav
+                    # Handle the case where audio might be a torch tensor
+                    if hasattr(audio_for_stats, 'cpu'):
+                        audio_for_stats = audio_for_stats.cpu().numpy()
+                    if isinstance(audio_for_stats, np.ndarray) and audio_for_stats.ndim > 1:
+                        audio_for_stats = audio_for_stats.squeeze()
+                    audio_samples = len(audio_for_stats)
+
+                    # Calculate word and char counts
+                    word_count = len(txt.split())
+                    char_count = len(txt)
+
+                    # Record the generation
+                    speaker_stats_tracker.record_generation(
+                        speaker_id=speaker_id,
+                        language=lang_for_inference,
+                        word_count=word_count,
+                        char_count=char_count,
+                        audio_samples=audio_samples,
+                        sample_rate=xtts_model.config.audio.sample_rate
+                    )
+
                 out_wavs.append(trimmed_wav)
             except Exception as e:
                 logger.error(f"Error processing text: {e}")
@@ -370,7 +408,8 @@ multi_speaker_engine = MultiSpeakerInference(
     xtts_model=xtts_model,
     speaker_registry=speaker_registry,
     inference_fn=inference,
-    soundtrack_manager=soundtrack_manager
+    soundtrack_manager=soundtrack_manager,
+    speaker_stats_tracker=speaker_stats_tracker
 )
 logger.info("Multi-speaker inference engine initialized")
 

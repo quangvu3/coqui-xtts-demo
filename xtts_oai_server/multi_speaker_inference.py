@@ -9,7 +9,7 @@ class MultiSpeakerInference:
     Handle multi-speaker inference with automatic speaker switching and silence insertion.
     """
 
-    def __init__(self, xtts_model, speaker_registry, inference_fn, soundtrack_manager=None):
+    def __init__(self, xtts_model, speaker_registry, inference_fn, soundtrack_manager=None, speaker_stats_tracker=None):
         """
         Initialize the multi-speaker inference engine.
 
@@ -18,11 +18,13 @@ class MultiSpeakerInference:
             speaker_registry: UnifiedSpeakerRegistry instance
             inference_fn: The inference function to use for TTS generation
             soundtrack_manager: Optional SoundtrackManager instance for background music
+            speaker_stats_tracker: Optional SpeakerStatsTracker for per-speaker stats
         """
         self.xtts_model = xtts_model
         self.speaker_registry = speaker_registry
         self.inference_fn = inference_fn
         self.soundtrack_manager = soundtrack_manager
+        self.speaker_stats_tracker = speaker_stats_tracker
 
     def synthesize_segments(
         self,
@@ -102,7 +104,7 @@ class MultiSpeakerInference:
                     wav, tokens = self.inference_fn(
                         input_text=text,
                         language=language,
-                        speaker_id=None,  # We provide embeddings directly
+                        speaker_id=speaker_id,  # Pass speaker_id for stats tracking
                         gpt_cond_latent=gpt_cond_latent,
                         speaker_embedding=speaker_embedding,
                         temperature=temperature,
@@ -111,6 +113,42 @@ class MultiSpeakerInference:
                         repetition_penalty=repetition_penalty,
                         sentence_silence_ms=sentence_silence_ms
                     )
+
+                    # Record stats for this speaker
+                    if self.speaker_stats_tracker and speaker_id:
+                        # Handle the case where audio might be a torch tensor
+                        audio_for_stats = wav
+                        if hasattr(audio_for_stats, 'cpu'):
+                            audio_for_stats = audio_for_stats.cpu().numpy()
+                        if isinstance(audio_for_stats, np.ndarray) and audio_for_stats.ndim > 1:
+                            audio_for_stats = audio_for_stats.squeeze()
+                        audio_samples = len(audio_for_stats)
+
+                        # Calculate word and char counts
+                        word_count = len(text.split())
+                        char_count = len(text)
+
+                        # Detect language from text if needed
+                        from langdetect import detect
+                        try:
+                            lang = detect(text)
+                            # Map to our language codes
+                            if lang == 'zh-tw':
+                                lang = 'zh-cn'
+                            elif lang not in ['en', 'vi', 'ja', 'zh-cn', 'ko', 'es', 'fr', 'de', 'it', 'pt', 'pl', 'tr', 'ru', 'nl', 'cs', 'ar', 'hu']:
+                                lang = 'en'
+                        except:
+                            lang = 'en'
+
+                        # Record the generation
+                        self.speaker_stats_tracker.record_generation(
+                            speaker_id=speaker_id,
+                            language=lang,
+                            word_count=word_count,
+                            char_count=char_count,
+                            audio_samples=audio_samples,
+                            sample_rate=self.xtts_model.config.audio.sample_rate
+                        )
 
                     out_wavs.append(wav)
                     total_tokens += tokens

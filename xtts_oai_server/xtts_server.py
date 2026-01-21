@@ -27,6 +27,7 @@ from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences, merge_sentences_balanced
 from utils.length_penalty import calculate_length_penalty
 from utils.audio_trimmer import trim_audio, validate_audio_length, TrimConfig
+from utils.speaker_stats import SpeakerStatsTracker
 
 # Import multi-speaker support modules
 from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
@@ -72,6 +73,12 @@ use_deepspeed = False
 
 # Initialize audio trimming configuration
 TRIM_CONFIG = TrimConfig()
+
+# Initialize per-speaker stats tracker
+SPEAKER_STATS_PATH = f"{APP_DIR}/speakers/speaker_stats.json"
+speaker_stats_tracker = SpeakerStatsTracker(stats_path=SPEAKER_STATS_PATH)
+TRIM_CONFIG.speaker_stats_tracker = speaker_stats_tracker
+logger.info(f"Speaker stats tracker initialized at {SPEAKER_STATS_PATH}")
 
 xtts_model = None
 def load_model():
@@ -145,7 +152,7 @@ multi_speaker_engine = None
 
 logger.info(f"Multi-speaker support initialized with {len(speaker_registry.list_all_speakers())} speakers")
 
-default_speaker_id = "Aaron Dreschner"
+default_speaker_id = "storyteller_1"
 
 # Cache for last used speaker ID - used as fallback when no speaker is specified in multi-chunk requests
 last_used_speaker_id = default_speaker_id
@@ -199,7 +206,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
               temperature=0.2, top_p=0.85, top_k=40, repetition_penalty=29.0, sentence_silence_ms=500):
     """
     Generate speech from text with silence padding options.
-    
+
     Args:
         input_text: Text to synthesize
         language: Target language
@@ -211,12 +218,16 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
         top_k: Top-k sampling parameter
         repetition_penalty: Repetition penalty factor
         sentence_silence_ms: Silence to add after each sentence (milliseconds)
-    
+
     Returns:
         tuple: (final_wav_array, num_of_tokens)
     """
     language_code = lang_detect(input_text) if language == 'Auto' else language_dict.get(language, 'en')
-    
+
+    # Use default speaker if none specified
+    if speaker_id is None:
+        speaker_id = default_speaker_id
+
     # Split text by sentence
     if language_code in ["ja", "zh-cn"]:
         sentences = input_text.split("。")
@@ -274,9 +285,10 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     sample_rate=xtts_model.config.audio.sample_rate,
                     inference_fn=xtts_model.inference,
                     word_threshold=21,
-                    length_tolerance=1.1,
+                    length_tolerance=1.3,
                     max_retries=10,
                     config=TRIM_CONFIG,
+                    speaker_id=speaker_id,
                     gpt_cond_latent=gpt_cond_latent,
                     speaker_embedding=speaker_embedding,
                     temperature=temperature,
@@ -285,6 +297,32 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     repetition_penalty=repetition_penalty,
                     enable_text_splitting=True,
                 )
+
+                # Record generation statistics for per-speaker learning
+                # Use the original text (txt) for stats, not the audio with added silence
+                if speaker_id and speaker_stats_tracker:
+                    # Get audio samples (without silence padding)
+                    audio_for_stats = sentence_wav
+                    # Handle the case where audio might be a torch tensor
+                    if hasattr(audio_for_stats, 'cpu'):
+                        audio_for_stats = audio_for_stats.cpu().numpy()
+                    if isinstance(audio_for_stats, np.ndarray) and audio_for_stats.ndim > 1:
+                        audio_for_stats = audio_for_stats.squeeze()
+                    audio_samples = len(audio_for_stats)
+
+                    # Calculate word and char counts
+                    word_count = len(txt.split())
+                    char_count = len(txt)
+
+                    # Record the generation
+                    speaker_stats_tracker.record_generation(
+                        speaker_id=speaker_id,
+                        language=lang,
+                        word_count=word_count,
+                        char_count=char_count,
+                        audio_samples=audio_samples,
+                        sample_rate=xtts_model.config.audio.sample_rate
+                    )
 
                 # Add silence after each sentence (except the last one)
                 if sentence_silence_ms > 0 and i < len(sentences) - 1:
@@ -314,7 +352,8 @@ multi_speaker_engine = MultiSpeakerInference(
     xtts_model=xtts_model,
     speaker_registry=speaker_registry,
     inference_fn=inference,
-    soundtrack_manager=soundtrack_manager
+    soundtrack_manager=soundtrack_manager,
+    speaker_stats_tracker=speaker_stats_tracker
 )
 logger.info("Multi-speaker inference engine initialized")
 

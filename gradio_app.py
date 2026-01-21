@@ -21,7 +21,7 @@ from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences
 from utils.length_penalty import calculate_length_penalty
-from utils.audio_trimmer import trim_audio, TrimConfig
+from utils.audio_trimmer import trim_audio, validate_audio_length, TrimConfig
 
 # Import multi-speaker support modules
 from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
@@ -333,13 +333,24 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                 )
 
                 # Trim audio to remove excess silence and over-generation
-                trimmed_wav = trim_audio(
-                    audio_array=out["wav"],
+                # For short text (<11 words), validate length and retry if over-generated
+                trimmed_wav = validate_audio_length(
+                    audio=out["wav"],
                     text=txt,
                     language=lang_for_inference,
                     sample_rate=24000,
-                    strategy='text_only',
-                    config=TRIM_CONFIG
+                    inference_fn=xtts_model.inference,
+                    word_threshold=11,
+                    length_tolerance=1.3,
+                    max_retries=5,
+                    config=TRIM_CONFIG,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty*1.0,
+                    enable_text_splitting=True,
                 )
                 out_wavs.append(trimmed_wav)
             except Exception as e:

@@ -26,7 +26,7 @@ from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences, merge_sentences_balanced
 from utils.length_penalty import calculate_length_penalty
-from utils.audio_trimmer import trim_audio, TrimConfig
+from utils.audio_trimmer import trim_audio, validate_audio_length, TrimConfig
 
 # Import multi-speaker support modules
 from xtts_oai_server.custom_speaker_manager import CustomSpeakerManager
@@ -178,12 +178,20 @@ def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k
 
 def add_silence_to_wav_array(wav_array, sample_rate=24000, silence_ms=1000):
     """Add silence to the end of a wav numpy array"""
+    # Convert torch tensor to numpy if needed
+    if hasattr(wav_array, 'cpu'):  # torch tensor
+        wav_array = wav_array.cpu().numpy()
+
+    # Handle 2D array input (shape: [1, samples] or [channels, samples])
+    if isinstance(wav_array, np.ndarray) and wav_array.ndim > 1:
+        wav_array = wav_array.squeeze()
+
     # Calculate number of silence samples needed
     silence_samples = int((silence_ms / 1000.0) * sample_rate)
-    
+
     # Create silence array (zeros)
     silence = np.zeros(silence_samples, dtype=wav_array.dtype)
-    
+
     # Concatenate original audio with silence
     return np.concatenate([wav_array, silence])
 
@@ -258,7 +266,25 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     enable_text_splitting=True,
                 )
 
-                sentence_wav = out["wav"]
+                # For short text (<11 words), validate length and retry if over-generated
+                sentence_wav = validate_audio_length(
+                    audio=out["wav"],
+                    text=txt,
+                    language=lang,
+                    sample_rate=xtts_model.config.audio.sample_rate,
+                    inference_fn=xtts_model.inference,
+                    word_threshold=15,
+                    length_tolerance=1.2,
+                    max_retries=10,
+                    config=TRIM_CONFIG,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                    enable_text_splitting=True,
+                )
 
                 # Add silence after each sentence (except the last one)
                 if sentence_silence_ms > 0 and i < len(sentences) - 1:

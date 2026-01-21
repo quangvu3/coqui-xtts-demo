@@ -9,12 +9,36 @@ The trimming system helps prevent the common issue where short sentences
 generate unnecessarily long audio with trailing silence or artifacts.
 """
 
+import random
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Callable
 from utils.logger import setup_logger
 
+# Try to import torch for tensor handling
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
 logger = setup_logger(__file__)
+
+# Vietnamese audio duration: 0.6 seconds per word (word-based prediction)
+VI_AUDIO_PER_WORD = 0.6
+
+
+def _ensure_1d_array(audio):
+    """Convert audio to 1D numpy array, handling torch tensors and 2D arrays."""
+    # Convert torch tensor to numpy if needed
+    if HAS_TORCH and hasattr(audio, 'cpu'):  # torch tensor
+        audio = audio.cpu().numpy()
+
+    # Handle 2D array input (shape: [1, samples] or [channels, samples])
+    if isinstance(audio, np.ndarray) and audio.ndim > 1:
+        audio = audio.squeeze()
+
+    return audio
 
 
 @dataclass
@@ -41,7 +65,7 @@ class TrimConfig:
         'ja': 1.3,      # Japanese: denser information per character
         'zh-cn': 1.3,   # Chinese: similar to Japanese
         'ko': 1.2,      # Korean: moderately dense
-        'vi': 2.0,      # Vietnamese: normal after normalization
+        'vi': 1.0,      # Vietnamese: uses word-based prediction instead
         'en': 1.0,      # English: baseline
         'es': 1.0,      # Spanish
         'fr': 1.0,      # French
@@ -56,6 +80,9 @@ class TrimConfig:
         'ar': 1.1,      # Arabic: slightly denser
         'hu': 1.0,      # Hungarian
     })
+
+    # Vietnamese word-based prediction: seconds per word
+    vi_audio_per_word: float = 0.6
 
     # Word count adjustments for very short sentences
     short_sentence_thresholds: dict = field(default_factory=lambda: {
@@ -75,6 +102,40 @@ class TrimConfig:
     language_strategies: dict = field(default_factory=dict)
 
 
+def predict_vietnamese_audio_length(
+    text: str,
+    sample_rate: int = 24000,
+    config: Optional[TrimConfig] = None
+) -> int:
+    """
+    Predict Vietnamese audio length using word-based calculation.
+
+    Vietnamese text uses spaces between words, making word count a reliable
+    predictor of audio duration. Uses 0.6 seconds per word as the standard.
+
+    Args:
+        text: Input Vietnamese text to synthesize
+        sample_rate: Audio sample rate (default: 24000)
+        config: Optional TrimConfig for customization
+
+    Returns:
+        int: Predicted audio length in samples
+
+    Examples:
+        >>> predict_vietnamese_audio_length("xin chào", 24000)
+        28800  # 2 words * 0.6s * 24000 samples = 28800
+
+        >>> predict_vietnamese_audio_length("tôi tên là minh", 24000)
+        43200  # 4 words * 0.6s * 24000 samples = 57600
+    """
+    config = config or TrimConfig()
+
+    word_count = len(text.split())
+    expected_seconds = word_count * config.vi_audio_per_word
+
+    return int(expected_seconds * sample_rate)
+
+
 def predict_audio_length(
     text: str,
     language: str,
@@ -84,9 +145,9 @@ def predict_audio_length(
     """
     Predict expected audio duration from text characteristics.
 
-    Uses character-based calculation which works universally across all
-    languages including CJK (Japanese, Chinese, Korean) that don't use
-    spaces between words.
+    Uses character-based calculation for most languages, but Vietnamese
+    uses word-based calculation since Vietnamese has spaces between words
+    and character count doesn't map well to speech duration.
 
     Args:
         text: Input text to synthesize
@@ -103,8 +164,15 @@ def predict_audio_length(
 
         >>> predict_audio_length("こんにちは", "ja", 24000)
         4680  # Longer due to 1.3x Japanese multiplier
+
+        >>> predict_audio_length("xin chào", "vi", 24000)
+        28800  # Word-based: 2 words * 0.6s * 24000
     """
     config = config or TrimConfig()
+
+    # Vietnamese uses word-based prediction
+    if language == 'vi':
+        return predict_vietnamese_audio_length(text, sample_rate, config)
 
     # Base calculation using character count
     text_length = len(text)
@@ -163,6 +231,8 @@ def detect_speech_endpoint(
         >>> endpoint = detect_speech_endpoint(audio, 24000)
         >>> # endpoint will be around 24000-26400 (1.0-1.1 seconds)
     """
+    audio_array = _ensure_1d_array(audio_array)
+
     if len(audio_array) == 0:
         return 0
 
@@ -232,6 +302,8 @@ def trim_audio(
         >>> # trimmed will be significantly shorter than audio
     """
     config = config or TrimConfig()
+
+    audio_array = _ensure_1d_array(audio_array)
 
     # Check for strategy override
     if language in config.language_strategies:
@@ -341,3 +413,198 @@ def trim_audio(
     # Unknown strategy - log warning and return original
     logger.warning(f"Unknown trimming strategy '{strategy}', returning original audio")
     return audio_array
+
+
+def validate_audio_length(
+    audio: np.ndarray,
+    text: str,
+    language: str,
+    sample_rate: int = 24000,
+    inference_fn: Optional[Callable] = None,
+    word_threshold: int = 15,
+    length_tolerance: float = 1.5,
+    max_retries: int = 5,
+    config: Optional[TrimConfig] = None,
+    **inference_kwargs
+) -> np.ndarray:
+    """
+    Validate audio length for short text segments and retry with adjusted length_penalty if needed.
+
+    For text segments with fewer than `word_threshold` words, this function estimates
+    the expected audio length using `predict_audio_length()` and compares it to the
+    generated audio. If the actual audio is significantly longer than expected
+    (exceeding `length_tolerance`), it retries inference with more aggressive
+    length_penalty values in the range [-0.2, -0.1].
+
+    Args:
+        audio: Generated audio numpy array from initial inference
+        text: Source text that was synthesized
+        language: Language code (en, vi, ja, zh-cn, etc.)
+        sample_rate: Audio sample rate (default: 24000)
+        inference_fn: Optional function to call for retry inference with signature:
+                      fn(text, language, length_penalty, **kwargs) -> dict with 'wav' key
+                      Must accept length_penalty as keyword argument.
+        word_threshold: Words below this trigger validation (default: 15)
+        length_tolerance: Retry if actual > expected * tolerance (default: 1.5)
+        max_retries: Number of retry attempts (default: 5)
+        config: Optional TrimConfig for prediction parameters
+        **inference_kwargs: Additional arguments passed to inference_fn on retry
+
+    Returns:
+        np.ndarray: Audio array (possibly from retry inference) trimmed using text_only strategy
+
+    Examples:
+        >>> # During inference loop
+        >>> out = xtts_model.inference(text=txt, ..., length_penalty=lp)
+        >>> audio = validate_audio_length(
+        ...     audio=out["wav"],
+        ...     text=txt,
+        ...     language=lang,
+        ...     sample_rate=24000,
+        ...     inference_fn=xtts_model.inference,
+        ...     word_threshold=15,
+        ...     length_tolerance=1.5,
+        ...     max_retries=5,
+        ...     gpt_cond_latent=gpt_cond_latent,
+        ...     speaker_embedding=speaker_embedding,
+        ...     temperature=temperature,
+        ...     top_p=top_p,
+        ...     top_k=top_k,
+        ...     repetition_penalty=repetition_penalty,
+        ...     enable_text_splitting=True,
+        ... )
+    """
+    config = config or TrimConfig()
+
+    audio = _ensure_1d_array(audio)
+
+    # Skip validation for longer text segments
+    word_count = len(text.split())
+    if word_count >= word_threshold:
+        logger.debug(f"Skipping length validation: {word_count} words >= {word_threshold} threshold")
+        return trim_audio(
+            audio_array=audio,
+            text=text,
+            language=language,
+            sample_rate=sample_rate,
+            strategy='text_only',
+            config=config
+        )
+
+    # Estimate expected audio length
+    expected_length = predict_audio_length(text, language, sample_rate, config)
+    actual_length = len(audio)
+
+    logger.debug(f"Validating short text ({word_count} words): '{text[:50]}...'")
+    logger.debug(f"  Expected: {expected_length} samples ({expected_length/sample_rate:.2f}s)")
+    logger.debug(f"  Actual: {actual_length} samples ({actual_length/sample_rate:.2f}s)")
+    logger.debug(f"  Ratio: {actual_length/expected_length:.2f}x (tolerance: {length_tolerance}x)")
+
+    # Check if audio is within tolerance
+    max_allowed = int(expected_length * length_tolerance)
+    if actual_length <= max_allowed:
+        logger.debug(f"  Result: PASS - audio within tolerance")
+        return trim_audio(
+            audio_array=audio,
+            text=text,
+            language=language,
+            sample_rate=sample_rate,
+            strategy='text_only',
+            config=config
+        )
+
+    # Audio is too long - need to retry with adjusted length_penalty
+    logger.info(f"  Result: OVER-GENERATED ({actual_length/max_allowed:.1f}x) - retrying with adjusted length_penalty")
+    logger.info(f"  Text segment: '{text[:100]}{'...' if len(text) > 100 else ''}'")
+
+    if inference_fn is None:
+        logger.warning("No inference_fn provided, cannot retry - returning trimmed audio")
+        return trim_audio(
+            audio_array=audio,
+            text=text,
+            language=language,
+            sample_rate=sample_rate,
+            strategy='text_only',
+            config=config
+        )
+
+    # Track all retry results and best result (shortest within tolerance)
+    all_attempts = []
+    best_audio = None
+    best_length = float('inf')
+
+    for retry in range(max_retries):
+        length_penalty = -0.2
+
+        try:
+            logger.debug(f"  Retry {retry + 1}/{max_retries}: length_penalty={length_penalty:.3f}")
+            out = inference_fn(
+                text=text,
+                language=language,
+                length_penalty=length_penalty,
+                **inference_kwargs
+            )
+            retry_audio = _ensure_1d_array(out["wav"])
+            retry_length = len(retry_audio)
+
+            # Store all attempts
+            all_attempts.append({
+                'length_penalty': length_penalty,
+                'audio': retry_audio,
+                'length': retry_length,
+            })
+
+            logger.debug(f"    Length: {retry_length} samples ({retry_length/sample_rate:.2f}s)")
+
+            # Check if this result is within tolerance (prefer shorter)
+            if retry_length <= max_allowed:
+                if best_audio is None or retry_length < best_length:
+                    best_audio = retry_audio
+                    best_length = retry_length
+                    logger.debug(f"    Result: NEW BEST - within tolerance, shorter than previous")
+
+        except Exception as e:
+            logger.error(f"  Retry {retry + 1} failed: {e}")
+            continue
+
+    # Log all attempts summary
+    if all_attempts:
+        lengths = [a['length'] for a in all_attempts]
+        logger.debug(f"  All attempts lengths: {lengths}")
+        logger.debug(f"  Best attempt: {best_length} samples ({best_length/sample_rate:.2f}s)" if best_audio else f"  No valid attempts")
+
+    # If we have a valid result, return the best (shortest) one
+    if best_audio is not None:
+        logger.debug(f"  Returning best attempt (shortest valid: {best_length} samples)")
+        return trim_audio(
+            audio_array=best_audio,
+            text=text,
+            language=language,
+            sample_rate=sample_rate,
+            strategy='text_only',
+            config=config
+        )
+
+    # No valid result - select shortest from all attempts
+    if all_attempts:
+        shortest = min(all_attempts, key=lambda x: x['length'])
+        logger.warning(f"  No valid attempts after {max_retries} retries - using shortest: {shortest['length']} samples")
+        return trim_audio(
+            audio_array=shortest['audio'],
+            text=text,
+            language=language,
+            sample_rate=sample_rate,
+            strategy='text_only',
+            config=config
+        )
+
+    # Fallback: return original audio trimmed
+    logger.warning("  All retries failed - returning original trimmed audio")
+    return trim_audio(
+        audio_array=audio,
+        text=text,
+        language=language,
+        sample_rate=sample_rate,
+        strategy='text_only',
+        config=config
+    )

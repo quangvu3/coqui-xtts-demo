@@ -21,7 +21,7 @@ from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences
 from utils.length_penalty import calculate_length_penalty
-from utils.audio_trimmer import trim_audio, validate_audio_length, TrimConfig
+from utils.audio_trimmer import validate_audio_length
 from utils.speaker_stats import SpeakerStatsTracker
 
 # Import multi-speaker support modules
@@ -68,13 +68,9 @@ def lang_detect(text):
 input_text_max_length = 100000
 use_deepspeed = False
 
-# Initialize audio trimming configuration
-TRIM_CONFIG = TrimConfig()
-
 # Initialize per-speaker stats tracker
 SPEAKER_STATS_PATH = f"{APP_DIR}/speakers/speaker_stats.json"
 speaker_stats_tracker = SpeakerStatsTracker(stats_path=SPEAKER_STATS_PATH)
-TRIM_CONFIG.speaker_stats_tracker = speaker_stats_tracker
 logger.info(f"Speaker stats tracker initialized at {SPEAKER_STATS_PATH}")
 
 try:
@@ -348,7 +344,6 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     enable_text_splitting=True,
                 )
 
-                # Trim audio to remove excess silence and over-generation
                 # For short text (<11 words), validate length and retry if over-generated
                 trimmed_wav = validate_audio_length(
                     audio=out["wav"],
@@ -359,7 +354,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     word_threshold=11,
                     length_tolerance=1.3,
                     max_retries=5,
-                    config=TRIM_CONFIG,
+                    speaker_stats_tracker=speaker_stats_tracker,
                     speaker_id=speaker_id,
                     gpt_cond_latent=gpt_cond_latent,
                     speaker_embedding=speaker_embedding,

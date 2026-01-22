@@ -820,7 +820,7 @@ def validate_audio_length(
         return audio
 
     # Audio is too long - need to retry with adjusted parameters
-    short_text_word_threshold = 11
+    short_text_word_threshold = 16
     if word_count < short_text_word_threshold:
         logger.info(f"  Result: OVER-GENERATED ({actual_length/max_allowed:.1f}x) - will use text augmentation")
     else:
@@ -884,8 +884,8 @@ def validate_audio_length(
     
     # Strategy 2: Random parameter tuning retry
     for retry in range(max_retries):
-        length_penalty = random.uniform(-2.0, -1.5)
-        temperature = random.uniform(1.0, 2.0)
+        length_penalty = random.uniform(0.0, 2.0)
+        temperature = random.uniform(2.0, 3.0)
 
         try:
             logger.debug(f"  Retry {retry + 1}/{max_retries}: length_penalty={length_penalty:.3f}, temperature={temperature:.3f}")

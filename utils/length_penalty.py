@@ -3,30 +3,26 @@ Length penalty calculation for XTTS model inference.
 
 The length_penalty parameter controls how much the model should match
 the input text length when generating audio:
-- Values closer to -1.0: Encourage shorter audio (prevent over-generation)
-- Values closer to +0.0: Allow longer audio (for longer text)
+- Values closer to 1.0: For shorter text
+- Values closer to 2.0: For longer text
 """
 
 
 def calculate_length_penalty(
     text_length: int,
-    max_length: int = 180,
-    exponent: float = 1.0
+    max_length: int = 180
 ) -> float:
     """
-    Calculate dynamic length penalty using a linear function.
+    Calculate dynamic length penalty using linear scaling.
 
-    Uses linear scaling (exponent=1.0) to bias toward shorter sentences.
-    This ensures short text generates appropriately brief audio while
-    longer text can expand more naturally.
+    Maps text length linearly to penalty range [1.0, 2.0] without bias.
 
     Args:
         text_length: The character count of the text being synthesized
         max_length: The maximum text length for normalization (default: 180)
-        exponent: The power exponent (default: 1.0 for linear)
 
     Returns:
-        float: Length penalty in range [-1.5, -0.5]
+        float: Length penalty in range [1.0, 2.0]
     """
     # Clamp text_length to max_length
     clamped_length = min(text_length, max_length)
@@ -34,7 +30,7 @@ def calculate_length_penalty(
     # Normalize to [0, 1] range
     normalized = clamped_length / max_length
 
-    # Apply power function and scale to [-1.5, -0.5] range
-    penalty = (normalized ** exponent) * 1.0 - 1.5
+    # Scale to [1.0, 2.0] range
+    penalty = 1.0 + normalized
 
     return penalty

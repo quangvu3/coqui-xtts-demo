@@ -275,7 +275,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     top_p=top_p,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
-                    length_penalty=calculate_length_penalty(text_length=len(txt), max_length=max_text_length, exponent=2.0),
+                    length_penalty=calculate_length_penalty(text_length=len(txt), max_length=max_text_length),
                     enable_text_splitting=True,
                 )
 

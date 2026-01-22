@@ -353,7 +353,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     sample_rate=24000,
                     inference_fn=xtts_model.inference,
                     word_threshold=21,
-                    length_tolerance=1.2,
+                    length_tolerance=1.1,
                     max_retries=5,
                     speaker_stats_tracker=speaker_stats_tracker,
                     speaker_id=speaker_id,

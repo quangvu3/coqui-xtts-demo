@@ -82,19 +82,19 @@ FILLER_SENTENCES = {
 # Configuration for multi-signal boundary detection
 # Used by extract_original_audio() to find speech boundaries in augmented audio
 BOUNDARY_DETECTION_CONFIG = {
-    # Search window (asymmetric: more before prediction, less after)
-    'search_before_ms': 1500,      # 1.5 seconds before prediction
-    'search_after_ms': 500,        # 0.5 seconds after prediction (conservative)
+    # Search window (balanced: search around prediction point)
+    'search_before_ms': 800,       # 0.8 seconds before prediction
+    'search_after_ms': 1200,       # 1.2 seconds after prediction (allow for late boundaries)
 
     # Scoring weights for candidate selection (must sum to 1.0)
-    'weight_energy_drop': 0.30,    # Weight for energy drop detection
-    'weight_low_energy': 0.35,     # Weight for being in low energy region
-    'weight_zcr_change': 0.15,     # Weight for zero-crossing rate change
-    'weight_proximity': 0.20,      # Weight for proximity to prediction (prefers earlier)
+    'weight_energy_drop': 0.35,    # Weight for energy drop detection
+    'weight_low_energy': 0.40,     # Weight for being in low energy region
+    'weight_zcr_change': 0.10,     # Weight for zero-crossing rate change
+    'weight_proximity': 0.15,      # Weight for proximity to prediction (reduced bias)
 
     # Detection thresholds
-    'energy_drop_threshold': 0.3,  # Minimum energy drop ratio to consider
-    'low_energy_percentile': 20,   # Percentile for low energy threshold
+    'energy_drop_threshold': 0.25, # Minimum energy drop ratio to consider
+    'low_energy_percentile': 15,   # Percentile for low energy threshold
     'min_candidate_gap_ms': 50,    # Minimum ms between candidates to avoid duplicates
 
     # Frame analysis parameters
@@ -102,7 +102,7 @@ BOUNDARY_DETECTION_CONFIG = {
     'hop_length_ms': 10.0,         # Hop between frames
 
     # Fallback behavior
-    'fallback_bias_percent': 5,    # Percent to subtract from prediction if no candidates
+    'fallback_bias_percent': 0,    # No bias - use prediction directly if no candidates
 }
 
 
@@ -356,17 +356,17 @@ def find_boundary_candidates(
                 max_zcr_change = np.max(np.abs(zcr_derivative)) if np.max(np.abs(zcr_derivative)) > 0 else 1.0
                 zcr_change_score = min(1.0, abs(zcr_derivative[i]) / max_zcr_change) if i < len(zcr_derivative) else 0.0
 
-                # 4. Proximity score (conservative: prefer earlier, penalize later)
-                # Earlier than prediction: high score; later: lower score
+                # 4. Proximity score (balanced: prefer boundaries close to prediction)
+                # Both early and late cuts get penalized equally based on distance
                 distance_from_prediction = sample_in_audio - prediction_sample
                 if distance_from_prediction <= 0:
-                    # Before or at prediction: score based on how close
+                    # Before prediction: penalize based on distance
                     normalized_dist = abs(distance_from_prediction) / search_before_samples
-                    proximity_score = 1.0 - (normalized_dist * 0.3)  # Slight penalty for being too early
+                    proximity_score = max(0.0, 1.0 - normalized_dist)
                 else:
-                    # After prediction: stronger penalty
+                    # After prediction: same treatment, penalize based on distance
                     normalized_dist = distance_from_prediction / search_after_samples
-                    proximity_score = max(0.0, 0.7 - normalized_dist)  # Strong penalty for being late
+                    proximity_score = max(0.0, 1.0 - normalized_dist)
 
                 # Calculate total weighted score
                 total_score = (
@@ -535,12 +535,11 @@ def extract_original_audio(
             f"({trim_point/sample_rate:.3f}s, score={best_candidate.total_score:.3f})"
         )
     else:
-        # Fallback: use prediction with conservative bias (cut earlier)
-        fallback_bias = BOUNDARY_DETECTION_CONFIG['fallback_bias_percent'] / 100.0
-        trim_point = int(estimated_split * (1.0 - fallback_bias))
+        # Fallback: use prediction directly (no bias)
+        trim_point = estimated_split
         logger.debug(
-            f"    No candidates found, using fallback: sample {trim_point} "
-            f"({trim_point/sample_rate:.3f}s, {BOUNDARY_DETECTION_CONFIG['fallback_bias_percent']}% bias)"
+            f"    No candidates found, using prediction directly: sample {trim_point} "
+            f"({trim_point/sample_rate:.3f}s)"
         )
 
     # Ensure trim point is valid
@@ -821,8 +820,8 @@ def validate_audio_length(
         return audio
 
     # Audio is too long - need to retry with adjusted parameters
-    short_text_word_threshold = 10
-    if word_count <= short_text_word_threshold:
+    short_text_word_threshold = 11
+    if word_count < short_text_word_threshold:
         logger.info(f"  Result: OVER-GENERATED ({actual_length/max_allowed:.1f}x) - will use text augmentation")
     else:
         logger.info(f"  Result: OVER-GENERATED ({actual_length/max_allowed:.1f}x) - retrying with adjusted length_penalty")
@@ -838,7 +837,7 @@ def validate_audio_length(
     best_length = float('inf')
 
     # Strategy 1: Text augmentation for very short text
-    if word_count <= short_text_word_threshold and inference_fn is not None:
+    if word_count < short_text_word_threshold and inference_fn is not None:
         logger.debug(f"  Strategy: Text augmentation for very short text ({word_count} words)")
 
         # Create augmented text

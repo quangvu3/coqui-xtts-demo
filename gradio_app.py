@@ -20,7 +20,6 @@ from langdetect import detect
 from utils.vietnamese_normalization import normalize_vietnamese_text
 from utils.logger import setup_logger
 from utils.sentence import split_sentence, merge_sentences
-from utils.length_penalty import calculate_length_penalty
 from utils.audio_trimmer import validate_audio_length, trim_audio_end
 from utils.speaker_stats import SpeakerStatsTracker
 
@@ -172,11 +171,11 @@ def validate_input(input_text, language):
     return log_messages
     
 @spaces.GPU
-def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='Auto'):
+def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, length_penalty=1.0, language='Auto'):
     """Process text and generate audio."""
     global xtts_model
     log_messages = validate_input(input_text, language)
-    if log_messages: 
+    if log_messages:
         return None, log_messages
 
     start = time.time()
@@ -197,6 +196,7 @@ def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k
                 top_p=top_p,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
+                length_penalty=length_penalty,
                 sentence_silence_ms=500  # Add 0.5s silence between sentences
             )
         except ValueError as e:
@@ -214,7 +214,8 @@ def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k
                               temperature=temperature,
                               top_p=top_p,
                               top_k=top_k,
-                              repetition_penalty=float(repetition_penalty))
+                              repetition_penalty=float(repetition_penalty),
+                              length_penalty=length_penalty)
 
     end = time.time()
     processing_time = end - start
@@ -227,7 +228,7 @@ def synthesize_speech(input_text, speaker_id, temperature=0.3, top_p=0.85, top_k
     
 
 @spaces.GPU
-def generate_speech(input_text, speaker_reference_audio, enhance_speech, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, language='Auto'):
+def generate_speech(input_text, speaker_reference_audio, enhance_speech, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=10.0, length_penalty=1.0, language='Auto'):
     """Process text and generate audio."""
     global df_model, df_state, xtts_model
     log_messages = validate_input(input_text, language)
@@ -264,15 +265,16 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
     )
     
     # inference
-    wav_array, num_of_tokens = inference(input_text=input_text, 
+    wav_array, num_of_tokens = inference(input_text=input_text,
                           language=language,
-                          speaker_id=None, 
-                          gpt_cond_latent=gpt_cond_latent, 
-                          speaker_embedding=speaker_embedding, 
-                          temperature=temperature, 
-                          top_p=top_p, 
-                          top_k=top_k, 
-                          repetition_penalty=float(repetition_penalty))
+                          speaker_id=None,
+                          gpt_cond_latent=gpt_cond_latent,
+                          speaker_embedding=speaker_embedding,
+                          temperature=temperature,
+                          top_p=top_p,
+                          top_k=top_k,
+                          repetition_penalty=float(repetition_penalty),
+                          length_penalty=length_penalty)
     end = time.time()
     processing_time = end - start
     tokens_per_second = num_of_tokens/processing_time
@@ -283,7 +285,7 @@ def generate_speech(input_text, speaker_reference_audio, enhance_speech, tempera
     return (24000, wav_array), log_messages
 
 
-def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=29.0, sentence_silence_ms=500):
+def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speaker_embedding=None, temperature=0.3, top_p=0.85, top_k=50, repetition_penalty=29.0, length_penalty=1.0, sentence_silence_ms=500):
     # Bypass text with fewer than 2 alphabetic characters
     alpha_count = sum(1 for c in input_text if c.isalpha()) if input_text else 0
     if alpha_count < 2:
@@ -341,7 +343,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     top_p=top_p,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty*1.0,
-                    length_penalty=calculate_length_penalty(text_length=len(txt), max_length=max_text_length, exponent=2.0),
+                    length_penalty=length_penalty,
                     enable_text_splitting=True,
                 )
 
@@ -503,7 +505,7 @@ def build_gradio_ui():
                 log_output_mic = gr.Text(label="Log Output")
 
 
-        def process_mic_and_generate(input_text_mic, mic_ref_audio, enhance_speech_mic, temperature, top_p, top_k, repetition_penalty, language_mic):
+        def process_mic_and_generate(input_text_mic, mic_ref_audio, enhance_speech_mic, temperature, top_p, top_k, repetition_penalty, length_penalty, language_mic):
               if mic_ref_audio:
                   data = str(time.time()).encode("utf-8")
                   hash = hashlib.sha1(data).hexdigest()[:10]
@@ -512,7 +514,7 @@ def build_gradio_ui():
                   torch_audio = torch.from_numpy(mic_ref_audio[1].astype(float))
                   try:
                       torchaudio.save(output_path, torch_audio.unsqueeze(0), mic_ref_audio[0])
-                      return generate_speech(input_text_mic, output_path, enhance_speech_mic, temperature, top_p, top_k, repetition_penalty, language_mic)
+                      return generate_speech(input_text_mic, output_path, enhance_speech_mic, temperature, top_p, top_k, repetition_penalty, length_penalty, language_mic)
                   except Exception as e:
                       logger.error(f"Error saving audio file: {e}")
                       return None, f"Error saving audio file: {e}"
@@ -524,26 +526,27 @@ def build_gradio_ui():
                 with gr.Column():
                     temperature = gr.Slider(label="Temperature", minimum=0.1, maximum=1.0, value=0.3, step=0.05)
                     repetition_penalty = gr.Slider(label="Repetition penalty", minimum=1.0, maximum=50.0, value=29.0, step=1.0)
-                    
+
                 with gr.Column():
                     top_p = gr.Slider(label="Top P", minimum=0.5, maximum=1.0, value=0.85, step=0.05)
                     top_k = gr.Slider(label="Top K", minimum=0, maximum=100, value=50, step=5)
+                    length_penalty = gr.Slider(label="Length Penalty", minimum=-2.0, maximum=2.0, value=1.0, step=0.1)
         
         synthesize_button.click(
             synthesize_speech,
-            inputs=[input_text, speaker_id, temperature, top_p, top_k, repetition_penalty, language],
+            inputs=[input_text, speaker_id, temperature, top_p, top_k, repetition_penalty, length_penalty, language],
             outputs=[audio_output, log_output],
         )
-        
+
         generate_button.click(
             generate_speech,
-            inputs=[input_text_generate, speaker_reference_audio, enhance_speech, temperature, top_p, top_k, repetition_penalty, language_generate],
+            inputs=[input_text_generate, speaker_reference_audio, enhance_speech, temperature, top_p, top_k, repetition_penalty, length_penalty, language_generate],
             outputs=[audio_output_generate, log_output_generate],
         )
 
         generate_button_mic.click(
             process_mic_and_generate,
-            inputs=[input_text_mic, mic_ref_audio, enhance_speech_mic, temperature, top_p, top_k, repetition_penalty, language_mic],
+            inputs=[input_text_mic, mic_ref_audio, enhance_speech_mic, temperature, top_p, top_k, repetition_penalty, length_penalty, language_mic],
             outputs=[audio_output_mic, log_output_mic],
         )
         

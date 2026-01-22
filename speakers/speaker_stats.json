@@ -1,15 +1,15 @@
 {
   "storyteller_1": {
-    "generation_count": 2437,
-    "last_used": "2026-01-22T04:34:42.669699+00:00",
+    "generation_count": 2447,
+    "last_used": "2026-01-22T04:35:07.893328+00:00",
     "languages": {
       "vi": {
-        "total_words": 84629,
-        "total_chars": 380727,
-        "total_samples": 632337804,
-        "generation_count": 2433,
-        "audio_per_word": 0.32127884383987354,
-        "audio_per_char": 0.07110559543608751
+        "total_words": 85032,
+        "total_chars": 382530,
+        "total_samples": 635194047,
+        "generation_count": 2443,
+        "audio_per_word": 0.31401737800083296,
+        "audio_per_char": 0.0698753707197091
       },
       "en": {
         "total_words": 4,

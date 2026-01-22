@@ -17,7 +17,8 @@ Per-Speaker Learning:
 
 import random
 import numpy as np
-from typing import Optional, Callable, Tuple
+from dataclasses import dataclass
+from typing import Optional, Callable, Tuple, List
 from utils.logger import setup_logger
 from utils.speaker_stats import SpeakerStatsTracker
 
@@ -29,6 +30,80 @@ except ImportError:
     HAS_TORCH = False
 
 logger = setup_logger(__file__)
+
+# Filler sentences for text augmentation strategy
+# Used to help generate appropriate audio length for very short text segments
+FILLER_SENTENCES = {
+    'vi': [
+        "Đây là một đoạn văn bản mẫu để thử nghiệm giọng nói tổng hợp.",
+        "Văn bản này được thêm vào để giúp tạo ra âm thanh tự nhiên hơn.",
+        "Thử nghiệm hệ thống tạo giọng nói với các đoạn văn bản mẫu.",
+    ],
+    'en': [
+        "This is a sample text to test the synthesized voice output.",
+        "Additional text is added here to help generate more natural speech.",
+        "Testing the voice synthesis system with sample content.",
+    ],
+    'es': [
+        "Este es un texto de ejemplo para probar la voz sintetizada.",
+        "Se añade texto adicional para ayudar a generar un habla más natural.",
+    ],
+    'fr': [
+        "Ceci est un texte d'exemple pour tester la voix synthétisée.",
+        "Du texte supplémentaire est ajouté pour aider à générer une parole plus naturelle.",
+    ],
+    'de': [
+        "Dies ist ein Beispieltext zur Prüfung der synthetisierten Stimme.",
+        "Zusätzlicher Text wird hier eingefügt, um natürlichere Sprache zu erzeugen.",
+    ],
+    'it': [
+        "Questo è un testo di esempio per testare la voce sintetizzata.",
+        "Viene aggiunto del testo aggiuntivo per aiutare a generare un discorso più naturale.",
+    ],
+    'pt': [
+        "Este é um texto de exemplo para testar a voz sintetizada.",
+        "Texto adicional é adicionado aqui para ajudar a gerar fala mais natural.",
+    ],
+    'ja': [
+        "これは合成音声をテストするためのサンプルテキストです。",
+        "より自然な音声を生成するために追加のテキストが記載されています。",
+    ],
+    'zh-cn': [
+        "这是用于测试合成语音的示例文本。",
+        "此处添加了额外的文本，以帮助生成更自然的语音。",
+    ],
+    'ko': [
+        "합성 음성을 테스트하기 위한 샘플 텍스트입니다.",
+        "더 자연스러운 음성을 생성하기 위해 추가 텍스트가 포함되어 있습니다.",
+    ],
+}
+
+
+# Configuration for multi-signal boundary detection
+# Used by extract_original_audio() to find speech boundaries in augmented audio
+BOUNDARY_DETECTION_CONFIG = {
+    # Search window (asymmetric: more before prediction, less after)
+    'search_before_ms': 1500,      # 1.5 seconds before prediction
+    'search_after_ms': 500,        # 0.5 seconds after prediction (conservative)
+
+    # Scoring weights for candidate selection (must sum to 1.0)
+    'weight_energy_drop': 0.30,    # Weight for energy drop detection
+    'weight_low_energy': 0.35,     # Weight for being in low energy region
+    'weight_zcr_change': 0.15,     # Weight for zero-crossing rate change
+    'weight_proximity': 0.20,      # Weight for proximity to prediction (prefers earlier)
+
+    # Detection thresholds
+    'energy_drop_threshold': 0.3,  # Minimum energy drop ratio to consider
+    'low_energy_percentile': 20,   # Percentile for low energy threshold
+    'min_candidate_gap_ms': 50,    # Minimum ms between candidates to avoid duplicates
+
+    # Frame analysis parameters
+    'frame_length_ms': 25.0,       # Analysis frame length
+    'hop_length_ms': 10.0,         # Hop between frames
+
+    # Fallback behavior
+    'fallback_bias_percent': 5,    # Percent to subtract from prediction if no candidates
+}
 
 
 def _ensure_1d_array(audio):
@@ -42,6 +117,447 @@ def _ensure_1d_array(audio):
         audio = audio.squeeze()
 
     return audio
+
+
+# =============================================================================
+# Acoustic Feature Functions for Boundary Detection
+# =============================================================================
+
+def compute_short_term_energy(
+    audio: np.ndarray,
+    sample_rate: int = 24000,
+    frame_length_ms: float = 25.0,
+    hop_length_ms: float = 10.0
+) -> Tuple[np.ndarray, int, int]:
+    """
+    Calculate RMS energy per frame for the audio signal.
+
+    Args:
+        audio: 1D numpy array of audio samples
+        sample_rate: Audio sample rate (default: 24000)
+        frame_length_ms: Analysis frame length in milliseconds (default: 25.0)
+        hop_length_ms: Hop between frames in milliseconds (default: 10.0)
+
+    Returns:
+        Tuple of (energy_array, frame_length_samples, hop_length_samples)
+    """
+    frame_length = int((frame_length_ms / 1000.0) * sample_rate)
+    hop_length = int((hop_length_ms / 1000.0) * sample_rate)
+
+    num_frames = max(1, (len(audio) - frame_length) // hop_length + 1)
+    energy = np.zeros(num_frames)
+
+    for i in range(num_frames):
+        start = i * hop_length
+        end = min(start + frame_length, len(audio))
+        frame = audio[start:end]
+        energy[i] = np.sqrt(np.mean(frame ** 2)) if len(frame) > 0 else 0.0
+
+    return energy, frame_length, hop_length
+
+
+def compute_energy_derivative(energy: np.ndarray) -> np.ndarray:
+    """
+    Compute the derivative of energy to detect rapid transitions.
+
+    Negative values indicate energy drops (potential speech boundaries).
+
+    Args:
+        energy: Array of frame energy values
+
+    Returns:
+        Array of energy derivatives (same length as input, first value is 0)
+    """
+    if len(energy) < 2:
+        return np.zeros_like(energy)
+
+    derivative = np.zeros_like(energy)
+    derivative[1:] = energy[1:] - energy[:-1]
+    return derivative
+
+
+def compute_zero_crossing_rate(
+    audio: np.ndarray,
+    sample_rate: int = 24000,
+    frame_length_ms: float = 25.0,
+    hop_length_ms: float = 10.0
+) -> np.ndarray:
+    """
+    Compute zero-crossing rate per frame.
+
+    ZCR is useful for detecting voiced/unvoiced transitions. Unvoiced segments
+    (silence, fricatives) typically have higher ZCR than voiced speech.
+
+    Args:
+        audio: 1D numpy array of audio samples
+        sample_rate: Audio sample rate (default: 24000)
+        frame_length_ms: Analysis frame length in milliseconds (default: 25.0)
+        hop_length_ms: Hop between frames in milliseconds (default: 10.0)
+
+    Returns:
+        Array of zero-crossing rates per frame
+    """
+    frame_length = int((frame_length_ms / 1000.0) * sample_rate)
+    hop_length = int((hop_length_ms / 1000.0) * sample_rate)
+
+    num_frames = max(1, (len(audio) - frame_length) // hop_length + 1)
+    zcr = np.zeros(num_frames)
+
+    for i in range(num_frames):
+        start = i * hop_length
+        end = min(start + frame_length, len(audio))
+        frame = audio[start:end]
+
+        if len(frame) > 1:
+            # Count sign changes
+            signs = np.sign(frame)
+            sign_changes = np.sum(np.abs(np.diff(signs)) > 0)
+            zcr[i] = sign_changes / len(frame)
+
+    return zcr
+
+
+def find_low_energy_regions(
+    energy: np.ndarray,
+    percentile: float = 20
+) -> np.ndarray:
+    """
+    Find regions where energy is below the specified percentile.
+
+    Args:
+        energy: Array of frame energy values
+        percentile: Percentile threshold for "low" energy (default: 20)
+
+    Returns:
+        Boolean array where True indicates low energy frame
+    """
+    if len(energy) == 0:
+        return np.array([], dtype=bool)
+
+    threshold = np.percentile(energy, percentile)
+    return energy < threshold
+
+
+# =============================================================================
+# Boundary Candidate System
+# =============================================================================
+
+@dataclass
+class BoundaryCandidate:
+    """Represents a potential speech boundary with scoring metrics."""
+    frame_idx: int           # Frame index in the analysis window
+    sample_idx: int          # Sample index in the original audio
+    energy_drop_score: float # Score based on energy drop magnitude
+    low_energy_score: float  # Score based on being in low energy region
+    zcr_change_score: float  # Score based on ZCR change
+    proximity_score: float   # Score based on proximity to prediction
+    total_score: float       # Weighted combination of all scores
+
+
+def find_boundary_candidates(
+    audio: np.ndarray,
+    prediction_sample: int,
+    sample_rate: int = 24000,
+    config: Optional[dict] = None
+) -> List[BoundaryCandidate]:
+    """
+    Find potential speech boundary candidates using multi-signal analysis.
+
+    Uses energy drops, low energy regions, and zero-crossing rate changes
+    to identify likely speech boundaries. Scores candidates with conservative
+    bias toward earlier cuts (to avoid filler bleed).
+
+    Args:
+        audio: Full audio array to analyze
+        prediction_sample: Predicted split point (sample index)
+        sample_rate: Audio sample rate (default: 24000)
+        config: Optional configuration dict (uses BOUNDARY_DETECTION_CONFIG if None)
+
+    Returns:
+        List of BoundaryCandidate objects, sorted by total_score descending
+    """
+    if config is None:
+        config = BOUNDARY_DETECTION_CONFIG
+
+    # Extract config values
+    search_before_ms = config['search_before_ms']
+    search_after_ms = config['search_after_ms']
+    frame_length_ms = config['frame_length_ms']
+    hop_length_ms = config['hop_length_ms']
+    energy_drop_threshold = config['energy_drop_threshold']
+    low_energy_percentile = config['low_energy_percentile']
+    min_candidate_gap_ms = config['min_candidate_gap_ms']
+
+    # Weights
+    w_energy_drop = config['weight_energy_drop']
+    w_low_energy = config['weight_low_energy']
+    w_zcr_change = config['weight_zcr_change']
+    w_proximity = config['weight_proximity']
+
+    # Convert to samples
+    search_before_samples = int((search_before_ms / 1000.0) * sample_rate)
+    search_after_samples = int((search_after_ms / 1000.0) * sample_rate)
+    min_candidate_gap_samples = int((min_candidate_gap_ms / 1000.0) * sample_rate)
+
+    # Define asymmetric search window
+    window_start = max(0, prediction_sample - search_before_samples)
+    window_end = min(len(audio), prediction_sample + search_after_samples)
+
+    if window_end <= window_start:
+        return []
+
+    # Extract search window
+    window_audio = audio[window_start:window_end]
+
+    # Compute acoustic features
+    energy, frame_length, hop_length = compute_short_term_energy(
+        window_audio, sample_rate, frame_length_ms, hop_length_ms
+    )
+    energy_derivative = compute_energy_derivative(energy)
+    zcr = compute_zero_crossing_rate(
+        window_audio, sample_rate, frame_length_ms, hop_length_ms
+    )
+    zcr_derivative = compute_energy_derivative(zcr)  # Reuse for ZCR changes
+    low_energy_mask = find_low_energy_regions(energy, low_energy_percentile)
+
+    # Find candidates at energy drops
+    candidates = []
+    min_gap_frames = max(1, min_candidate_gap_samples // hop_length)
+
+    # Normalize energy for consistent scoring
+    max_energy = np.max(energy) if np.max(energy) > 0 else 1.0
+
+    for i in range(1, len(energy)):
+        # Check for significant energy drop
+        if energy_derivative[i] < 0:
+            drop_magnitude = abs(energy_derivative[i]) / max_energy
+
+            if drop_magnitude >= energy_drop_threshold or low_energy_mask[i]:
+                # Calculate sample position in original audio
+                frame_sample_in_window = i * hop_length
+                sample_in_audio = window_start + frame_sample_in_window
+
+                # Check minimum gap from existing candidates
+                too_close = any(
+                    abs(c.frame_idx - i) < min_gap_frames for c in candidates
+                )
+                if too_close:
+                    continue
+
+                # Calculate scores
+
+                # 1. Energy drop score (larger drops = higher score)
+                energy_drop_score = min(1.0, drop_magnitude / 0.5)
+
+                # 2. Low energy score (in low energy region = 1.0)
+                low_energy_score = 1.0 if low_energy_mask[i] else 0.0
+
+                # 3. ZCR change score (larger changes = higher score)
+                max_zcr_change = np.max(np.abs(zcr_derivative)) if np.max(np.abs(zcr_derivative)) > 0 else 1.0
+                zcr_change_score = min(1.0, abs(zcr_derivative[i]) / max_zcr_change) if i < len(zcr_derivative) else 0.0
+
+                # 4. Proximity score (conservative: prefer earlier, penalize later)
+                # Earlier than prediction: high score; later: lower score
+                distance_from_prediction = sample_in_audio - prediction_sample
+                if distance_from_prediction <= 0:
+                    # Before or at prediction: score based on how close
+                    normalized_dist = abs(distance_from_prediction) / search_before_samples
+                    proximity_score = 1.0 - (normalized_dist * 0.3)  # Slight penalty for being too early
+                else:
+                    # After prediction: stronger penalty
+                    normalized_dist = distance_from_prediction / search_after_samples
+                    proximity_score = max(0.0, 0.7 - normalized_dist)  # Strong penalty for being late
+
+                # Calculate total weighted score
+                total_score = (
+                    w_energy_drop * energy_drop_score +
+                    w_low_energy * low_energy_score +
+                    w_zcr_change * zcr_change_score +
+                    w_proximity * proximity_score
+                )
+
+                candidates.append(BoundaryCandidate(
+                    frame_idx=i,
+                    sample_idx=sample_in_audio,
+                    energy_drop_score=energy_drop_score,
+                    low_energy_score=low_energy_score,
+                    zcr_change_score=zcr_change_score,
+                    proximity_score=proximity_score,
+                    total_score=total_score
+                ))
+
+    # Sort by total score descending
+    candidates.sort(key=lambda c: c.total_score, reverse=True)
+
+    logger.debug(f"  Found {len(candidates)} boundary candidates in search window")
+    if candidates:
+        best = candidates[0]
+        logger.debug(
+            f"    Best candidate: sample {best.sample_idx} "
+            f"(score={best.total_score:.3f}, energy_drop={best.energy_drop_score:.3f}, "
+            f"low_energy={best.low_energy_score:.3f}, zcr={best.zcr_change_score:.3f}, "
+            f"proximity={best.proximity_score:.3f})"
+        )
+
+    return candidates
+
+
+def create_augmented_text(
+    text: str,
+    language: str = 'en',
+    max_chars: int = 180
+) -> str:
+    """
+    Combine original short text with a filler sentence.
+
+    This helps generate appropriate audio length for very short text segments
+    that would otherwise cause the TTS model to over-generate audio.
+
+    Args:
+        text: Original short text to augment
+        language: Language code for selecting appropriate filler (default: 'en')
+        max_chars: Maximum characters for combined text (default: 180)
+
+    Returns:
+        str: Combined text with original + filler, truncated to max_chars
+
+    Examples:
+        >>> create_augmented_text("Xin chào", "vi", 180)
+        'Xin chào. Đây là một đoạn văn bản mẫu để thử nghiệm giọng nói tổng hợp.'
+    """
+    # Get filler sentence for language
+    fillers = FILLER_SENTENCES.get(language, FILLER_SENTENCES.get('en', []))
+    filler = random.choice(fillers)
+
+    # Add period if text doesn't end with punctuation
+    punctuation_marks = '.!?,;:。！？，'
+    if text and text[-1] not in punctuation_marks:
+        text = text.rstrip() + '.'
+
+    # Combine and truncate
+    combined = f"{text} {filler}"
+    if len(combined) > max_chars:
+        combined = combined[:max_chars - 3] + "..."
+
+    return combined
+
+
+def extract_original_audio(
+    full_audio: np.ndarray,
+    original_text: str,
+    augmented_text: str,
+    language: str,
+    sample_rate: int = 24000,
+    speaker_stats_tracker: Optional[SpeakerStatsTracker] = None,
+    speaker_id: Optional[str] = None,
+    silence_threshold_db: float = -40.0  # Deprecated, kept for API compatibility
+) -> np.ndarray:
+    """
+    Extract audio corresponding to original_text from full audio.
+
+    Uses prediction-based ratio to estimate the split point, then applies
+    multi-signal boundary detection to find the optimal cut point. This approach
+    uses energy drops, low energy regions, and zero-crossing rate changes to
+    identify speech boundaries, with conservative bias toward earlier cuts to
+    prevent filler speech bleed.
+
+    Args:
+        full_audio: Audio generated from augmented text
+        original_text: The original short text
+        augmented_text: The combined text (original + filler)
+        language: Language code for prediction
+        sample_rate: Audio sample rate (default: 24000)
+        speaker_stats_tracker: Optional tracker for per-speaker rates
+        speaker_id: Optional speaker ID for using learned rates
+        silence_threshold_db: Deprecated, kept for API compatibility
+
+    Returns:
+        np.ndarray: Audio corresponding to original text with 10ms fade-out
+
+    Examples:
+        >>> # After generating augmented audio
+        >>> original_audio = extract_original_audio(
+        ...     full_audio=augmented_audio,
+        ...     original_text="Xin chào",
+        ...     augmented_text="Xin chào Đây là một đoạn văn bản...",
+        ...     language="vi",
+        ...     sample_rate=24000
+        ... )
+    """
+    # Use prediction functions for more accurate split estimation
+    # This accounts for language rates, punctuation, and word count adjustments
+    predicted_original = predict_audio_length(
+        original_text, language, sample_rate,
+        speaker_stats_tracker=speaker_stats_tracker,
+        speaker_id=speaker_id
+    )
+
+    # Extract filler portion by removing original text
+    filler_only = augmented_text.replace(original_text, '').strip()
+    if filler_only:
+        predicted_filler = predict_audio_length(
+            filler_only, language, sample_rate,
+            speaker_stats_tracker=speaker_stats_tracker,
+            speaker_id=speaker_id
+        )
+    else:
+        predicted_filler = 0
+
+    # Calculate split ratio using predicted lengths
+    total_predicted = predicted_original + predicted_filler
+    if total_predicted > 0:
+        ratio = predicted_original / total_predicted
+    else:
+        # Fallback to raw text length ratio
+        ratio = len(original_text) / len(augmented_text)
+
+    logger.debug(f"    Prediction ratio: {ratio:.3f} (original={predicted_original}, filler={predicted_filler})")
+
+    # Estimate split point using prediction ratio
+    estimated_split = int(len(full_audio) * ratio)
+    logger.debug(f"    Estimated split: sample {estimated_split} ({estimated_split/sample_rate:.3f}s)")
+
+    # Use multi-signal boundary detection to find best cut point
+    candidates = find_boundary_candidates(
+        audio=full_audio,
+        prediction_sample=estimated_split,
+        sample_rate=sample_rate,
+        config=BOUNDARY_DETECTION_CONFIG
+    )
+
+    # Select best candidate with conservative bias
+    if candidates:
+        # Use the highest-scoring candidate
+        best_candidate = candidates[0]
+        trim_point = best_candidate.sample_idx
+        logger.debug(
+            f"    Using boundary candidate at sample {trim_point} "
+            f"({trim_point/sample_rate:.3f}s, score={best_candidate.total_score:.3f})"
+        )
+    else:
+        # Fallback: use prediction with conservative bias (cut earlier)
+        fallback_bias = BOUNDARY_DETECTION_CONFIG['fallback_bias_percent'] / 100.0
+        trim_point = int(estimated_split * (1.0 - fallback_bias))
+        logger.debug(
+            f"    No candidates found, using fallback: sample {trim_point} "
+            f"({trim_point/sample_rate:.3f}s, {BOUNDARY_DETECTION_CONFIG['fallback_bias_percent']}% bias)"
+        )
+
+    # Ensure trim point is valid
+    trim_point = max(0, min(trim_point, len(full_audio)))
+
+    # Extract audio with fade-out to prevent artifacts
+    extracted = full_audio[:trim_point].copy()
+
+    # Apply 10ms fade-out at the end
+    fade_samples = int(0.010 * sample_rate)  # 10ms
+    if len(extracted) > fade_samples:
+        fade_curve = np.linspace(1.0, 0.0, fade_samples)
+        extracted[-fade_samples:] = extracted[-fade_samples:] * fade_curve
+
+    logger.debug(f"    Final extracted length: {len(extracted)} samples ({len(extracted)/sample_rate:.3f}s)")
+
+    return extracted
 
 
 def predict_vietnamese_audio_length(
@@ -100,7 +616,7 @@ def predict_audio_length(
     sample_rate: int = 24000,
     speaker_stats_tracker: Optional[SpeakerStatsTracker] = None,
     speaker_id: Optional[str] = None,
-    fallback_audio_per_word: float = 0.6,
+    fallback_audio_per_word: float = 0.4,
     fallback_audio_per_char: float = 0.025,
     language_multipliers: Optional[dict] = None,
     base_duration_per_char: float = 0.025,
@@ -304,9 +820,13 @@ def validate_audio_length(
         logger.debug(f"  Result: PASS - audio within tolerance")
         return audio
 
-    # Audio is too long - need to retry with adjusted length_penalty
-    logger.info(f"  Result: OVER-GENERATED ({actual_length/max_allowed:.1f}x) - retrying with adjusted length_penalty")
-    logger.info(f"  Text segment: '{text[:100]}{'...' if len(text) > 100 else ''}'")
+    # Audio is too long - need to retry with adjusted parameters
+    short_text_word_threshold = 10
+    if word_count <= short_text_word_threshold:
+        logger.info(f"  Result: OVER-GENERATED ({actual_length/max_allowed:.1f}x) - will use text augmentation")
+    else:
+        logger.info(f"  Result: OVER-GENERATED ({actual_length/max_allowed:.1f}x) - retrying with adjusted length_penalty")
+    # logger.info(f"  Text segment: '{text[:100]}{'...' if len(text) > 100 else ''}'")
 
     if inference_fn is None:
         logger.warning("No inference_fn provided, cannot retry - returning original audio")
@@ -317,6 +837,53 @@ def validate_audio_length(
     best_audio = None
     best_length = float('inf')
 
+    # Strategy 1: Text augmentation for very short text
+    if word_count <= short_text_word_threshold and inference_fn is not None:
+        logger.debug(f"  Strategy: Text augmentation for very short text ({word_count} words)")
+
+        # Create augmented text
+        augmented_text = create_augmented_text(text, language, max_chars=180)
+
+        logger.debug(f"    Original: '{text[:50]}...' ({len(text)} chars)")
+        logger.debug(f"    Augmented: '{augmented_text[:50]}...' ({len(augmented_text)} chars)")
+
+        try:
+            # Generate audio for augmented text
+            retry_kwargs = {**inference_kwargs, 'length_penalty': -1.7, 'temperature': 1.0}
+            out = inference_fn(
+                text=augmented_text,
+                language=language,
+                **retry_kwargs
+            )
+            full_audio = _ensure_1d_array(out["wav"])
+
+            # Extract original portion using prediction-based split
+            original_audio = extract_original_audio(
+                full_audio=full_audio,
+                original_text=text,
+                augmented_text=augmented_text,
+                language=language,
+                sample_rate=sample_rate,
+                speaker_stats_tracker=speaker_stats_tracker,
+                speaker_id=speaker_id
+            )
+
+            # Check if within tolerance
+            extracted_length = len(original_audio)
+
+            logger.debug(f"    Full audio: {len(full_audio)} samples ({len(full_audio)/sample_rate:.2f}s)")
+            logger.debug(f"    Extracted audio: {extracted_length} samples ({extracted_length/sample_rate:.2f}s)")
+
+            if extracted_length <= max_allowed:
+                logger.debug(f"    Result: SUCCESS - extracted audio within tolerance")
+            else:
+                logger.debug(f"    Result: Extracted audio still too long ({extracted_length/max_allowed:.1f}x)")
+            return original_audio
+        except Exception as e:
+            logger.error(f"    Text augmentation failed: {e}")
+            # Fall through to random retry
+    
+    # Strategy 2: Random parameter tuning retry
     for retry in range(max_retries):
         length_penalty = random.uniform(-2.0, -1.5)
         temperature = random.uniform(1.0, 2.0)

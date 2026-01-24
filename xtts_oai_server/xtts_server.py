@@ -288,7 +288,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     inference_fn=xtts_model.inference,
                     word_threshold=21,
                     length_tolerance=1.1,
-                    max_retries=5,
+                    max_retries=3,
                     speaker_stats_tracker=speaker_stats_tracker,
                     speaker_id=speaker_id,
                     gpt_cond_latent=gpt_cond_latent,

@@ -1,15 +1,15 @@
 {
   "storyteller_1": {
-    "generation_count": 4831,
-    "last_used": "2026-01-24T15:37:34.451614+00:00",
+    "generation_count": 4855,
+    "last_used": "2026-01-24T15:38:44.008833+00:00",
     "languages": {
       "vi": {
-        "total_words": 168860,
-        "total_chars": 757384,
-        "total_samples": 1257627785,
-        "generation_count": 4822,
-        "audio_per_word": 0.34138597831284495,
-        "audio_per_char": 0.07718021195962453
+        "total_words": 169836,
+        "total_chars": 761846,
+        "total_samples": 1264943180,
+        "generation_count": 4846,
+        "audio_per_word": 0.32951398010634736,
+        "audio_per_char": 0.0726439733266213
       },
       "en": {
         "total_words": 9,
@@ -22,16 +22,16 @@
     }
   },
   "young_man_1": {
-    "generation_count": 1049,
-    "last_used": "2026-01-24T15:37:32.315888+00:00",
+    "generation_count": 1056,
+    "last_used": "2026-01-24T15:38:28.588308+00:00",
     "languages": {
       "vi": {
-        "total_words": 19802,
-        "total_chars": 84405,
-        "total_samples": 128565743,
-        "generation_count": 1045,
-        "audio_per_word": 0.2767965266206781,
-        "audio_per_char": 0.06465556677621691
+        "total_words": 19961,
+        "total_chars": 85105,
+        "total_samples": 129532160,
+        "generation_count": 1052,
+        "audio_per_word": 0.2741649419010419,
+        "audio_per_char": 0.06280183900221659
       },
       "hu": {
         "total_words": 2,
@@ -94,16 +94,16 @@
     }
   },
   "storyteller_2": {
-    "generation_count": 161,
-    "last_used": "2026-01-24T15:36:18.901656+00:00",
+    "generation_count": 163,
+    "last_used": "2026-01-24T15:38:47.489508+00:00",
     "languages": {
       "vi": {
-        "total_words": 1489,
-        "total_chars": 6850,
-        "total_samples": 13185301,
-        "generation_count": 161,
-        "audio_per_word": 0.39915198271705493,
-        "audio_per_char": 0.07995039324057027
+        "total_words": 1533,
+        "total_chars": 7044,
+        "total_samples": 13508373,
+        "generation_count": 163,
+        "audio_per_word": 0.3695744942070938,
+        "audio_per_char": 0.07784987887484757
       }
     }
   },

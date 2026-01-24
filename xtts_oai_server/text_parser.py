@@ -21,8 +21,8 @@ class TextParser:
     # Regex pattern for silence tags: [silence 2s] or [silence 0.5s]
     SILENCE_TAG_PATTERN = r'\[silence\s+(\d+(?:\.\d+)?)\s*s\]'
 
-    # Regex pattern for soundtrack tags: [soundtrack 10s] or [soundtrack 10s fadeout:3s]
-    SOUNDTRACK_TAG_PATTERN = r'\[soundtrack(?:\s+(\d+(?:\.\d+)?)\s*s)?(?:\s+fadeout:(\d+(?:\.\d+)?)\s*s)?\]'
+    # Regex pattern for soundtrack tags: [soundtrack 10s], [soundtrack 10s fadeout:3s], [soundtrack 10s overlay]
+    SOUNDTRACK_TAG_PATTERN = r'\[soundtrack(?:\s+(\d+(?:\.\d+)?)\s*s)?(?:\s+fadeout:(\d+(?:\.\d+)?)\s*s)?(?:\s+overlay)?\]'
 
     # Regex pattern for any tag: [something]
     TAG_PATTERN = r'\[([^\]]+?)\]'
@@ -105,10 +105,13 @@ class TextParser:
                     # It's a soundtrack tag
                     duration = float(soundtrack_match.group(1)) if soundtrack_match.group(1) else 10.0
                     fadeout = float(soundtrack_match.group(2)) if soundtrack_match.group(2) else 5.0
+                    # Check if 'overlay' keyword is present in the original tag content
+                    overlay = 'overlay' in tag_content.lower()
                     segments.append({
                         'type': 'soundtrack',
                         'duration': duration,
-                        'fadeout': fadeout
+                        'fadeout': fadeout,
+                        'overlay': overlay
                     })
                 else:
                     # It's a speaker tag

@@ -110,3 +110,25 @@ class SoundtrackManager:
         """Rescan the soundtrack folder for new or removed files."""
         self.soundtracks = []
         self._scan_soundtracks()
+
+
+def overlay_audio(base: np.ndarray, overlay: np.ndarray) -> np.ndarray:
+    """Overlay overlay audio onto base audio.
+
+    Args:
+        base: Base audio array
+        overlay: Audio to overlay
+
+    Returns:
+        Mixed audio
+    """
+    if len(overlay) > len(base):
+        # Extend base if overlay is longer
+        base = np.pad(base, (0, len(overlay) - len(base)), mode='constant')
+    elif len(base) > len(overlay):
+        # Extend overlay if base is longer
+        overlay = np.pad(overlay, (0, len(base) - len(overlay)), mode='constant')
+
+    # Simple mix (average to prevent clipping)
+    mixed = (base + overlay) / 2.0
+    return mixed

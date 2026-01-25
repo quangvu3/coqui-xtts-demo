@@ -1,5 +1,6 @@
 import numpy as np
 from utils.logger import setup_logger
+from xtts_oai_server.soundtrack_manager import overlay_audio
 
 logger = setup_logger(__file__)
 
@@ -75,10 +76,14 @@ class MultiSpeakerInference:
                 soundtrack_wav = self._process_soundtrack(duration, fadeout)
                 if soundtrack_wav is not None:
                     if overlay and out_wavs:
-                        # Mix soundtrack with previous speech audio
+                        # Overlay soundtrack onto previous speech audio
                         previous_audio = out_wavs[-1]
-                        out_wavs[-1] = self._mix_audio(previous_audio, soundtrack_wav, mix_ratio=0.5)
-                        logger.info(f"Segment {i+1}: Mixed soundtrack with previous speech")
+                        if hasattr(previous_audio, 'cpu'):
+                            previous_audio = previous_audio.cpu().numpy()
+                        if previous_audio.ndim > 1:
+                            previous_audio = previous_audio.squeeze()
+                        out_wavs[-1] = overlay_audio(previous_audio, soundtrack_wav)
+                        logger.info(f"Segment {i+1}: Overlaid soundtrack with previous speech")
                     else:
                         out_wavs.append(soundtrack_wav)
                 else:

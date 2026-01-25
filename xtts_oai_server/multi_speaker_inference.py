@@ -211,41 +211,6 @@ class MultiSpeakerInference:
 
         return self.soundtrack_manager.get_random_soundtrack(duration_seconds, fadeout_seconds)
 
-    def _mix_audio(self, speech, soundtrack, mix_ratio=0.5):
-        """
-        Mix speech and soundtrack audio at specified ratio.
-
-        Args:
-            speech: Audio array for speech
-            soundtrack: Audio array for soundtrack
-            mix_ratio: Ratio of soundtrack to include (0.0 = speech only, 1.0 = soundtrack only)
-
-        Returns:
-            numpy.ndarray: Mixed audio array
-        """
-        # Convert to numpy arrays if needed
-        if hasattr(speech, 'cpu'):
-            speech = speech.cpu().numpy()
-        if hasattr(soundtrack, 'cpu'):
-            soundtrack = soundtrack.cpu().numpy()
-
-        # Ensure 1D arrays
-        if speech.ndim > 1:
-            speech = speech.squeeze()
-        if soundtrack.ndim > 1:
-            soundtrack = soundtrack.squeeze()
-
-        # Ensure same length (use shorter of the two)
-        min_len = min(len(speech), len(soundtrack))
-        speech = speech[:min_len]
-        soundtrack = soundtrack[:min_len]
-
-        # Mix: speech * (1-ratio) + soundtrack * ratio
-        speech_weight = 1.0 - mix_ratio
-        soundtrack_weight = mix_ratio
-
-        return (speech * speech_weight + soundtrack * soundtrack_weight).astype(np.float32)
-
     def estimate_duration(self, segments):
         """
         Estimate total audio duration from segments.

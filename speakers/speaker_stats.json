@@ -228,16 +228,16 @@
     }
   },
   "calm-woman-southen": {
-    "generation_count": 683,
-    "last_used": "2026-01-30T05:54:16.405012+00:00",
+    "generation_count": 705,
+    "last_used": "2026-01-30T05:55:28.387407+00:00",
     "languages": {
       "vi": {
-        "total_words": 14558,
-        "total_chars": 63441,
-        "total_samples": 105625466,
-        "generation_count": 683,
-        "audio_per_word": 0.3118376645025845,
-        "audio_per_char": 0.07110692385673567
+        "total_words": 15003,
+        "total_chars": 65424,
+        "total_samples": 108797616,
+        "generation_count": 705,
+        "audio_per_word": 0.3267357576874871,
+        "audio_per_char": 0.07493070026012172
       }
     }
   }

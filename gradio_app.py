@@ -311,7 +311,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
     # max_text_length is used for split_sentence() only
     max_text_length = 180
 
-    if speaker_id is not None:
+    if speaker_id is not None and gpt_cond_latent is None and speaker_embedding is None:
         # Use speaker_registry to support both built-in and custom speakers
         gpt_cond_latent, speaker_embedding = speaker_registry.get_speaker(speaker_id)
 

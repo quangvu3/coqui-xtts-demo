@@ -740,6 +740,7 @@ def validate_audio_length(
     max_retries: int = 5,
     speaker_stats_tracker: Optional[SpeakerStatsTracker] = None,
     speaker_id: Optional[str] = None,
+    enable_text_augmentation: bool = False,
     **inference_kwargs
 ) -> np.ndarray:
     """
@@ -764,6 +765,8 @@ def validate_audio_length(
         max_retries: Number of retry attempts (default: 5)
         speaker_stats_tracker: Optional tracker for per-speaker learned rates
         speaker_id: Optional speaker ID for using learned rates
+        enable_text_augmentation: Enable Strategy 1 (text augmentation for very short text)
+                                   when True (default: True)
         **inference_kwargs: Additional arguments passed to inference_fn on retry
 
     Returns:
@@ -790,6 +793,7 @@ def validate_audio_length(
         ...     top_k=top_k,
         ...     repetition_penalty=repetition_penalty,
         ...     enable_text_splitting=True,
+        ...     enable_text_augmentation=True,  # Enable Strategy 1 (disabled by default)
         ... )
     """
     audio = _ensure_1d_array(audio)
@@ -820,13 +824,12 @@ def validate_audio_length(
         return audio
 
     # Audio is too long - need to retry with adjusted parameters
-    short_text_word_threshold = 11
+    short_text_word_threshold = 6
     if word_count < short_text_word_threshold:
         logger.info(f"  Result: OVER-GENERATED ({actual_length/max_allowed:.1f}x) - will use text augmentation")
     else:
         logger.info(f"  Result: OVER-GENERATED ({actual_length/max_allowed:.1f}x) - retrying with adjusted length_penalty")
-    # logger.info(f"  Text segment: '{text[:100]}{'...' if len(text) > 100 else ''}'")
-
+    
     if inference_fn is None:
         logger.warning("No inference_fn provided, cannot retry - returning original audio")
         return audio
@@ -837,7 +840,7 @@ def validate_audio_length(
     best_length = float('inf')
 
     # Strategy 1: Text augmentation for very short text
-    if word_count < short_text_word_threshold and inference_fn is not None:
+    if enable_text_augmentation and word_count < short_text_word_threshold and inference_fn is not None:
         logger.debug(f"  Strategy: Text augmentation for very short text ({word_count} words)")
 
         # Create augmented text

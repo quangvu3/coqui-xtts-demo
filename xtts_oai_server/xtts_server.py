@@ -4,6 +4,7 @@ import time
 import site
 import subprocess
 import tempfile
+import argparse
 
 import asyncio
 from aiohttp import web
@@ -70,6 +71,7 @@ def lang_detect(text):
 
 input_text_max_length = 3000
 use_deepspeed = False
+enable_text_augmentation = False  # Enable Strategy 1 (text augmentation for very short text)
 
 # Initialize per-speaker stats tracker
 SPEAKER_STATS_PATH = f"{APP_DIR}/speakers/speaker_stats.json"
@@ -288,7 +290,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     inference_fn=xtts_model.inference,
                     word_threshold=21,
                     length_tolerance=1.1,
-                    max_retries=3,
+                    max_retries=5,
                     speaker_stats_tracker=speaker_stats_tracker,
                     speaker_id=speaker_id,
                     gpt_cond_latent=gpt_cond_latent,
@@ -298,6 +300,7 @@ def inference(input_text, language, speaker_id=None, gpt_cond_latent=None, speak
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
                     enable_text_splitting=True,
+                    enable_text_augmentation=enable_text_augmentation,
                 )
 
                 # Record generation statistics for per-speaker learning
@@ -500,13 +503,25 @@ async def handle_speakers_list(request):
 
 
 async def main():
+    parser = argparse.ArgumentParser(description='XTTS OpenAI-Compatible API Server')
+    parser.add_argument('--port', type=int, default=8088, help='Port to run the server on (default: 8088)')
+    parser.add_argument('--enable-text-augmentation', action='store_true',
+                        help='Enable Strategy 1 (text augmentation for very short text)')
+    args = parser.parse_args()
+
+    global enable_text_augmentation
+    enable_text_augmentation = args.enable_text_augmentation
+
+    if enable_text_augmentation:
+        logger.info("Text augmentation (Strategy 1) is ENABLED via command line")
+
     app = web.Application()
     app.router.add_post('/v1/audio/speech', handle_speech_request)
     app.router.add_get('/v1/speakers', handle_speakers_list)
 
     runner = web.AppRunner(app)
     await runner.setup()
-    port = 8088
+    port = args.port
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     print(f"Server started on port {port}")

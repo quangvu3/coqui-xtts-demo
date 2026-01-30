@@ -1,5 +1,6 @@
 import numpy as np
 from utils.logger import setup_logger
+from xtts_oai_server.soundtrack_manager import overlay_audio
 
 logger = setup_logger(__file__)
 
@@ -75,10 +76,14 @@ class MultiSpeakerInference:
                 soundtrack_wav = self._process_soundtrack(duration, fadeout)
                 if soundtrack_wav is not None:
                     if overlay and out_wavs:
-                        # Mix soundtrack with previous speech audio
+                        # Overlay soundtrack onto previous speech audio
                         previous_audio = out_wavs[-1]
-                        out_wavs[-1] = self._mix_audio(previous_audio, soundtrack_wav, mix_ratio=0.5)
-                        logger.info(f"Segment {i+1}: Mixed soundtrack with previous speech")
+                        if hasattr(previous_audio, 'cpu'):
+                            previous_audio = previous_audio.cpu().numpy()
+                        if previous_audio.ndim > 1:
+                            previous_audio = previous_audio.squeeze()
+                        out_wavs[-1] = overlay_audio(previous_audio, soundtrack_wav)
+                        logger.info(f"Segment {i+1}: Overlaid soundtrack with previous speech")
                     else:
                         out_wavs.append(soundtrack_wav)
                 else:
@@ -205,41 +210,6 @@ class MultiSpeakerInference:
             return None
 
         return self.soundtrack_manager.get_random_soundtrack(duration_seconds, fadeout_seconds)
-
-    def _mix_audio(self, speech, soundtrack, mix_ratio=0.5):
-        """
-        Mix speech and soundtrack audio at specified ratio.
-
-        Args:
-            speech: Audio array for speech
-            soundtrack: Audio array for soundtrack
-            mix_ratio: Ratio of soundtrack to include (0.0 = speech only, 1.0 = soundtrack only)
-
-        Returns:
-            numpy.ndarray: Mixed audio array
-        """
-        # Convert to numpy arrays if needed
-        if hasattr(speech, 'cpu'):
-            speech = speech.cpu().numpy()
-        if hasattr(soundtrack, 'cpu'):
-            soundtrack = soundtrack.cpu().numpy()
-
-        # Ensure 1D arrays
-        if speech.ndim > 1:
-            speech = speech.squeeze()
-        if soundtrack.ndim > 1:
-            soundtrack = soundtrack.squeeze()
-
-        # Ensure same length (use shorter of the two)
-        min_len = min(len(speech), len(soundtrack))
-        speech = speech[:min_len]
-        soundtrack = soundtrack[:min_len]
-
-        # Mix: speech * (1-ratio) + soundtrack * ratio
-        speech_weight = 1.0 - mix_ratio
-        soundtrack_weight = mix_ratio
-
-        return (speech * speech_weight + soundtrack * soundtrack_weight).astype(np.float32)
 
     def estimate_duration(self, segments):
         """

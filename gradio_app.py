@@ -6,6 +6,17 @@ import site
 import subprocess
 
 import gradio as gr
+
+# Monkey-patch gradio_client bug: additionalProperties can be boolean, not just schema dict
+# Fix for: TypeError: argument of type 'bool' is not iterable
+import gradio_client.utils as _gc_utils
+_original_json_schema_to_python_type = _gc_utils._json_schema_to_python_type
+def _patched_json_schema_to_python_type(schema, defs):
+    if isinstance(schema, bool):
+        return "Any"
+    return _original_json_schema_to_python_type(schema, defs)
+_gc_utils._json_schema_to_python_type = _patched_json_schema_to_python_type
+
 import torch
 import torchaudio
 import numpy as np
@@ -433,9 +444,9 @@ def build_gradio_ui():
     def update_help_text(speaker):
         """Update helper text visibility based on speaker selection."""
         if speaker == "Auto":
-            return gr.update(visible=True, value="**Auto mode enabled**: Use tags like `[speaker_id] text`, `[silence 2s]`, and `[soundtrack 10s fadeout:3s]` in your text. Example: `[soundtrack 10s] [narrator] Once upon a time... [silence 1s] [hero] Hello!`")
+            return "**Auto mode enabled**: Use tags like `[speaker_id] text`, `[silence 2s]`, and `[soundtrack 10s fadeout:3s]` in your text. Example: `[soundtrack 10s] [narrator] Once upon a time... [silence 1s] [hero] Hello!`"
         else:
-            return gr.update(visible=False)
+            return ""
 
     with gr.Blocks(title="Coqui XTTS Demo", theme='jimmyvu/small_and_pretty') as ui:
         gr.Markdown(
@@ -456,7 +467,7 @@ def build_gradio_ui():
                                      max_length=input_text_max_length)
                 
                 speaker_id = gr.Dropdown(label="Speaker", choices=["Auto"] + [s["id"] for s in speaker_registry.list_all_speakers()], value=default_speaker_id)
-                help_text = gr.Markdown(visible=False)
+                help_text = gr.Markdown(value="")
                 language = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value=default_language)
                 synthesize_button = gr.Button("Generate Speech")
             with gr.Column():
@@ -477,7 +488,6 @@ def build_gradio_ui():
                 speaker_reference_audio = gr.Audio(
                     label="Speaker reference audio:",
                     type="filepath",
-                    editable=False,
                     min_length=3,
                     max_length=300,
                     value=default_speaker_reference_audio
@@ -496,7 +506,7 @@ def build_gradio_ui():
                                      placeholder="Write the text you want to synthesize...", 
                                      lines=5, 
                                      max_length=input_text_max_length)
-                mic_ref_audio = gr.Audio(label="Record Reference Audio", sources=["microphone"])
+                mic_ref_audio = gr.Audio(label="Record Reference Audio", sources=["microphone"], type="numpy")
                 enhance_speech_mic = gr.Checkbox(label="Enhance Reference Audio", value=True)
                 language_mic = gr.Dropdown(label="Target Language", choices=[k for k in language_dict.keys()], value=default_language)
                 generate_button_mic = gr.Button("Generate Speech")
@@ -554,4 +564,4 @@ def build_gradio_ui():
 
 if __name__ == "__main__":
     ui = build_gradio_ui()
-    ui.launch(debug=False)
+    ui.launch(debug=False, share=False, server_name="0.0.0.0", server_port=7860)
